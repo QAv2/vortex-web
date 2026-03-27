@@ -163,8 +163,9 @@ class AudioEngine {
 
     loadFiles(files) {
         const start = this.tracks.length;
+        const audioExt = /\.(mp3|wav|ogg|flac|m4a|aac|opus|webm|wma|alac|caf|aif|aiff)$/i;
         for (const file of files) {
-            if (file.type.startsWith('audio/') || /\.(mp3|wav|ogg|flac|m4a|aac|opus|webm)$/i.test(file.name)) {
+            if (file.type.startsWith('audio/') || file.type.startsWith('video/') || audioExt.test(file.name) || file.type === '') {
                 this.tracks.push({ name: file.name.replace(/\.[^.]+$/, ''), url: URL.createObjectURL(file) });
             }
         }
@@ -1196,9 +1197,15 @@ class App {
         });
 
         // Browse / Add files buttons — all trigger the same file input
+        // IMPORTANT: init AudioContext during the tap (user gesture) — iOS blocks
+        // AudioContext creation in the file input 'change' handler
         const fi = document.getElementById('file-input');
-        document.getElementById('browse-btn').addEventListener('click', () => fi.click());
-        document.getElementById('pl-add-btn').addEventListener('click', () => fi.click());
+        const openPicker = async () => {
+            if (!this.audio.actx) await this.audio.init();
+            fi.click();
+        };
+        document.getElementById('browse-btn').addEventListener('click', openPicker);
+        document.getElementById('pl-add-btn').addEventListener('click', openPicker);
         fi.addEventListener('change', async () => { await this._loadFiles(fi.files); fi.value = ''; });
 
         // Click to seek (bottom 20px)
@@ -1326,7 +1333,8 @@ class App {
             this.ui.toast(`Volume ${Math.round(this.audio.volume * 100)}%`);
             this._resetMobileHideTimer();
         });
-        document.getElementById('mc-add').addEventListener('click', () => {
+        document.getElementById('mc-add').addEventListener('click', async () => {
+            if (!this.audio.actx) await this.audio.init();
             document.getElementById('file-input').click();
             this._resetMobileHideTimer();
         });
