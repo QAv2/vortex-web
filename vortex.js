@@ -173,7 +173,7 @@ class AudioEngine {
         }
     }
 
-    play(index) {
+    async play(index) {
         if (index !== undefined) this.currentTrack = index;
         if (this.tracks.length === 0) return;
         const track = this.tracks[this.currentTrack];
@@ -182,13 +182,16 @@ class AudioEngine {
             this.source = this.actx.createMediaElementSource(this.audio);
             this.source.connect(this.analyser);
         }
-        this.audio.play();
+        // Resume AudioContext if suspended (mobile autoplay policy)
+        if (this.actx.state === 'suspended') await this.actx.resume();
+        try { await this.audio.play(); } catch (e) { console.warn('Playback blocked:', e); }
         if (this.onTrackChange) this.onTrackChange();
     }
 
-    toggle() {
+    async toggle() {
         if (!this.audio?.src) return;
-        this.audio.paused ? this.audio.play() : this.audio.pause();
+        if (this.actx.state === 'suspended') await this.actx.resume();
+        this.audio.paused ? await this.audio.play() : this.audio.pause();
     }
 
     seek(frac) {
@@ -1195,7 +1198,7 @@ class App {
         // Browse button
         const fi = document.getElementById('file-input');
         document.getElementById('browse-btn').addEventListener('click', () => fi.click());
-        fi.addEventListener('change', () => this._loadFiles(fi.files));
+        fi.addEventListener('change', async () => await this._loadFiles(fi.files));
 
         // Click to seek (bottom 20px)
         this.canvas.addEventListener('click', (e) => {
