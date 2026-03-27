@@ -244,7 +244,26 @@
             text-transform: uppercase;
             border-bottom: 1px solid rgba(80, 200, 255, 0.1);
             flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
         }
+        #pl-add-btn {
+            background: rgba(80, 200, 255, 0.12);
+            border: 1px solid rgba(80, 200, 255, 0.25);
+            color: #50c8ff;
+            font-size: 18px;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            border-radius: 6px;
+            font-family: inherit;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #pl-add-btn:active { background: rgba(80, 200, 255, 0.25); }
         #playlist-panel .pl-tracks {
             flex: 1;
             overflow-y: auto;
@@ -314,7 +333,10 @@
         </div>
     </div>
     <div id="playlist-panel">
-        <div class="pl-header">Playlist</div>
+        <div class="pl-header">
+            <span>Playlist</span>
+            <button id="pl-add-btn" title="Add files">+</button>
+        </div>
         <div class="pl-tracks" id="pl-tracks">
             <div class="pl-empty">No tracks loaded</div>
         </div>
@@ -333,6 +355,7 @@
         <button id="mc-vol-down" title="Volume Down">&#128265;</button>
         <button id="mc-vol-up" title="Volume Up">&#128266;</button>
         <div class="mc-divider"></div>
+        <button id="mc-add" title="Add Files">&#43;</button>
         <button id="mc-playlist" title="Playlist">&#9776;</button>
         <button id="mc-fullscreen" title="Fullscreen">&#x26F6;</button>
     </div>

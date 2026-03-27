@@ -1195,10 +1195,11 @@ class App {
             await this._loadFiles(e.dataTransfer.files);
         });
 
-        // Browse button
+        // Browse / Add files buttons — all trigger the same file input
         const fi = document.getElementById('file-input');
         document.getElementById('browse-btn').addEventListener('click', () => fi.click());
-        fi.addEventListener('change', async () => await this._loadFiles(fi.files));
+        document.getElementById('pl-add-btn').addEventListener('click', () => fi.click());
+        fi.addEventListener('change', async () => { await this._loadFiles(fi.files); fi.value = ''; });
 
         // Click to seek (bottom 20px)
         this.canvas.addEventListener('click', (e) => {
@@ -1218,9 +1219,12 @@ class App {
 
     async _loadFiles(files) {
         if (!this.audio.actx) await this.audio.init();
+        const before = this.audio.trackCount;
         this.audio.loadFiles(files);
+        const added = this.audio.trackCount - before;
         document.getElementById('welcome').style.display = 'none';
-        this.ui.toast(this.audio.trackName);
+        if (before === 0) this.ui.toast(this.audio.trackName);
+        else if (added > 0) this.ui.toast(`+${added} track${added > 1 ? 's' : ''} added`);
         this._updatePlaylist();
         if (this.isMobile) this._showMobileControls();
     }
@@ -1320,6 +1324,10 @@ class App {
         document.getElementById('mc-vol-up').addEventListener('click', () => {
             this.audio.setVolume(this.audio.volume + 0.1);
             this.ui.toast(`Volume ${Math.round(this.audio.volume * 100)}%`);
+            this._resetMobileHideTimer();
+        });
+        document.getElementById('mc-add').addEventListener('click', () => {
+            document.getElementById('file-input').click();
             this._resetMobileHideTimer();
         });
         document.getElementById('mc-playlist').addEventListener('click', () => {
