@@ -91,6 +91,98 @@
         }
         #file-input { display: none; }
 
+        /* ── Mobile Controls ── */
+        #mobile-controls {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 56px;
+            background: rgba(8, 8, 12, 0.92);
+            border-top: 1px solid rgba(80, 200, 255, 0.15);
+            display: none;
+            align-items: center;
+            justify-content: space-evenly;
+            z-index: 70;
+            padding: 0 4px;
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+        }
+        #mobile-controls.active { display: flex; }
+        #mobile-controls button {
+            background: none;
+            border: none;
+            color: #8888a0;
+            font-size: 22px;
+            width: 44px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+            border-radius: 8px;
+            transition: background 0.15s, color 0.15s;
+        }
+        #mobile-controls button:active { background: rgba(80, 200, 255, 0.12); }
+        #mobile-controls button.accent { color: #50c8ff; }
+        #mobile-controls .mc-divider {
+            width: 1px;
+            height: 28px;
+            background: rgba(80, 200, 255, 0.1);
+            flex-shrink: 0;
+        }
+
+        /* Mobile seek bar — wider touch target */
+        #mobile-seek {
+            position: fixed;
+            bottom: 56px;
+            left: 0;
+            right: 0;
+            height: 20px;
+            background: rgba(8, 8, 12, 0.7);
+            display: none;
+            z-index: 70;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #mobile-seek.active { display: block; }
+        #mobile-seek .seek-track {
+            position: absolute;
+            bottom: 4px;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: #282832;
+        }
+        #mobile-seek .seek-fill {
+            height: 100%;
+            background: #50c8ff;
+            width: 0%;
+            transition: width 0.1s linear;
+        }
+
+        /* Mobile help overlay adjustments */
+        #mobile-help-hint { display: none; }
+
+        /* ── Responsive ── */
+        @media (max-width: 600px) {
+            #welcome h1 { font-size: 32px; letter-spacing: 6px; }
+            #welcome .sub { font-size: 13px; }
+            #welcome button { padding: 12px 28px; font-size: 14px; }
+            #welcome .keys { display: none; }
+            #mobile-help-hint { display: block; color: #787890; font-size: 13px; line-height: 1.8; text-align: center; }
+            #help-overlay .help-key { min-width: 80px; font-size: 13px; }
+            #help-overlay .help-desc { font-size: 13px; }
+            #help-overlay h2 { font-size: 22px; }
+            #playlist-panel { width: 100vw; }
+        }
+        @media (hover: none) and (pointer: coarse) {
+            #welcome .keys { display: none; }
+            #welcome .drag-hint { display: none; }
+            #mobile-help-hint { display: block; color: #787890; font-size: 13px; line-height: 1.8; text-align: center; }
+        }
+
         /* Help overlay */
         #help-overlay {
             position: fixed;
@@ -190,10 +282,14 @@
         <h1>Vortex</h1>
         <p class="sub">Real-time music visualizer</p>
         <button id="browse-btn">Browse Files</button>
-        <p class="sub">or drag &amp; drop audio files anywhere</p>
+        <p class="sub drag-hint">or drag &amp; drop audio files anywhere</p>
         <div class="keys">
             Space: play/pause &bull; &larr;&rarr;: presets &bull; &uarr;&darr;: volume<br>
             <span class="help-hint">Press H for full controls</span>
+        </div>
+        <div id="mobile-help-hint">
+            Swipe &larr;&rarr; to change visuals<br>
+            Tap screen to show controls
         </div>
         <p class="flash-warning">Contains flashing visuals &mdash; viewer discretion advised for photosensitive individuals</p>
     </div>
@@ -222,6 +318,23 @@
         <div class="pl-tracks" id="pl-tracks">
             <div class="pl-empty">No tracks loaded</div>
         </div>
+    </div>
+    <div id="mobile-seek">
+        <div class="seek-track"><div class="seek-fill" id="seek-fill"></div></div>
+    </div>
+    <div id="mobile-controls">
+        <button id="mc-prev" title="Previous">&#9198;</button>
+        <button id="mc-play" class="accent" title="Play/Pause">&#9654;</button>
+        <button id="mc-next" title="Next">&#9197;</button>
+        <div class="mc-divider"></div>
+        <button id="mc-preset-prev" title="Previous Preset">&#9664;</button>
+        <button id="mc-preset-next" title="Next Preset">&#9654;</button>
+        <div class="mc-divider"></div>
+        <button id="mc-vol-down" title="Volume Down">&#128265;</button>
+        <button id="mc-vol-up" title="Volume Up">&#128266;</button>
+        <div class="mc-divider"></div>
+        <button id="mc-playlist" title="Playlist">&#9776;</button>
+        <button id="mc-fullscreen" title="Fullscreen">&#x26F6;</button>
     </div>
     <input type="file" id="file-input" accept="audio/*" multiple>
     <script src="vortex.js"></script>

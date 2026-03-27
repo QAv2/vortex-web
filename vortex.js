@@ -1153,9 +1153,15 @@ class App {
         this.playlistEl = document.getElementById('playlist-panel');
         this.plTracksEl = document.getElementById('pl-tracks');
 
+        // Mobile state
+        this.isMobile = 'ontouchstart' in window || (navigator.maxTouchPoints > 0);
+        this.mobileVisible = false;
+        this.mobileHideTimer = 0;
+
         this._resize();
         this._setupEvents();
-        this.audio.onTrackChange = () => this._updatePlaylist();
+        if (this.isMobile) this._setupMobile();
+        this.audio.onTrackChange = () => { this._updatePlaylist(); this._updateMobilePlayBtn(); };
         this._loop = this._loop.bind(this);
         requestAnimationFrame(this._loop);
     }
@@ -1213,6 +1219,7 @@ class App {
         document.getElementById('welcome').style.display = 'none';
         this.ui.toast(this.audio.trackName);
         this._updatePlaylist();
+        if (this.isMobile) this._showMobileControls();
     }
 
     _switchPreset(idx) {
@@ -1238,6 +1245,118 @@ class App {
         this.plTracksEl.innerHTML = html;
         const active = this.plTracksEl.querySelector('.pl-track.active');
         if (active) active.scrollIntoView({ block: 'nearest' });
+    }
+
+    _setupMobile() {
+        const mc = document.getElementById('mobile-controls');
+        const seekBar = document.getElementById('mobile-seek');
+        this.mcEl = mc;
+        this.seekEl = seekBar;
+        this.seekFill = document.getElementById('seek-fill');
+
+        // Swipe gesture on canvas
+        let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
+        this.canvas.addEventListener('touchstart', (e) => {
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+            touchStartTime = Date.now();
+        }, { passive: true });
+        this.canvas.addEventListener('touchend', (e) => {
+            const dx = e.changedTouches[0].clientX - touchStartX;
+            const dy = e.changedTouches[0].clientY - touchStartY;
+            const elapsed = Date.now() - touchStartTime;
+
+            if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && elapsed < 400) {
+                // Horizontal swipe → change preset
+                if (dx > 0) this._switchPreset((this.currentPreset - 1 + this.presets.length) % this.presets.length);
+                else this._switchPreset((this.currentPreset + 1) % this.presets.length);
+            } else if (Math.abs(dx) < 20 && Math.abs(dy) < 20 && elapsed < 300) {
+                // Tap → toggle mobile controls
+                if (this.mobileVisible) this._hideMobileControls();
+                else this._showMobileControls();
+            }
+        }, { passive: true });
+
+        // Mobile seek bar touch
+        const seekTouch = (e) => {
+            e.preventDefault();
+            const rect = seekBar.getBoundingClientRect();
+            const frac = clamp((e.touches[0].clientX - rect.left) / rect.width, 0, 1);
+            this.audio.seek(frac);
+        };
+        seekBar.addEventListener('touchstart', seekTouch, { passive: false });
+        seekBar.addEventListener('touchmove', seekTouch, { passive: false });
+
+        // Control buttons
+        document.getElementById('mc-play').addEventListener('click', async () => {
+            if (this.audio.actx) this.audio.toggle();
+            this._updateMobilePlayBtn();
+            this._resetMobileHideTimer();
+        });
+        document.getElementById('mc-prev').addEventListener('click', () => {
+            this.audio.prevTrack();
+            this._resetMobileHideTimer();
+        });
+        document.getElementById('mc-next').addEventListener('click', () => {
+            this.audio.nextTrack();
+            this._resetMobileHideTimer();
+        });
+        document.getElementById('mc-preset-prev').addEventListener('click', () => {
+            this._switchPreset((this.currentPreset - 1 + this.presets.length) % this.presets.length);
+            this._resetMobileHideTimer();
+        });
+        document.getElementById('mc-preset-next').addEventListener('click', () => {
+            this._switchPreset((this.currentPreset + 1) % this.presets.length);
+            this._resetMobileHideTimer();
+        });
+        document.getElementById('mc-vol-down').addEventListener('click', () => {
+            this.audio.setVolume(this.audio.volume - 0.1);
+            this.ui.toast(`Volume ${Math.round(this.audio.volume * 100)}%`);
+            this._resetMobileHideTimer();
+        });
+        document.getElementById('mc-vol-up').addEventListener('click', () => {
+            this.audio.setVolume(this.audio.volume + 0.1);
+            this.ui.toast(`Volume ${Math.round(this.audio.volume * 100)}%`);
+            this._resetMobileHideTimer();
+        });
+        document.getElementById('mc-playlist').addEventListener('click', () => {
+            this.playlistEl.classList.toggle('active');
+            this._resetMobileHideTimer();
+        });
+        document.getElementById('mc-fullscreen').addEventListener('click', () => {
+            document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+            this._resetMobileHideTimer();
+        });
+    }
+
+    _showMobileControls() {
+        this.mobileVisible = true;
+        this.mobileHideTimer = 6;
+        this.mcEl.classList.add('active');
+        this.seekEl.classList.add('active');
+        this.ui.activity();
+    }
+
+    _hideMobileControls() {
+        this.mobileVisible = false;
+        this.mcEl.classList.remove('active');
+        this.seekEl.classList.remove('active');
+    }
+
+    _resetMobileHideTimer() {
+        this.mobileHideTimer = 6;
+        this.ui.activity();
+    }
+
+    _updateMobilePlayBtn() {
+        const btn = document.getElementById('mc-play');
+        if (btn) btn.innerHTML = this.audio.playing ? '&#9208;' : '&#9654;';
+    }
+
+    _updateMobileSeek() {
+        if (!this.seekFill || !this.mobileVisible) return;
+        const pct = this.audio.duration > 0 ? (this.audio.currentTime / this.audio.duration) * 100 : 0;
+        this.seekFill.style.width = pct + '%';
     }
 
     _handleKey(e) {
@@ -1354,6 +1473,15 @@ class App {
         }
 
         this.ui.render(this.ctx, this.audio, preset.name, dt, this.w, this.h);
+
+        // Mobile: auto-hide controls, update seek bar
+        if (this.isMobile && this.mobileVisible) {
+            this.mobileHideTimer -= dt;
+            if (this.mobileHideTimer <= 0) this._hideMobileControls();
+            this._updateMobileSeek();
+            this._updateMobilePlayBtn();
+        }
+
         requestAnimationFrame(this._loop);
     }
 }
