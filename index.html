@@ -89,7 +89,14 @@
             font-size: 11px;
             margin-top: 4px;
         }
-        #file-input { display: none; }
+        #file-input {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
 
         /* ── Mobile Controls ── */
         #mobile-controls {
@@ -359,7 +366,7 @@
         <button id="mc-playlist" title="Playlist">&#9776;</button>
         <button id="mc-fullscreen" title="Fullscreen">&#x26F6;</button>
     </div>
-    <input type="file" id="file-input" accept="audio/*,.mp3,.m4a,.aac,.ogg,.opus,.flac,.wav,.webm,.wma,.alac" multiple>
+    <input type="file" id="file-input" accept="audio/*,.mp3,.m4a,.aac,.ogg,.opus,.flac,.wav,.webm,.wma,.alac,*/*" multiple>
     <script src="vortex.js"></script>
 </body>
 </html>
