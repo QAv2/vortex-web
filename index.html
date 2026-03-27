@@ -14,7 +14,9 @@
     <meta name="twitter:description" content="10 real-time visualizer presets. Drag in your music, pick a visual, go full screen.">
     <meta name="twitter:image" content="og-image.png">
     <meta name="theme-color" content="#08080c">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127744;</text></svg>">
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -434,5 +436,10 @@
     </div>
     <input type="file" id="file-input" accept="audio/*,.mp3,.m4a,.aac,.ogg,.opus,.flac,.wav,.webm,.wma,.alac,*/*" multiple>
     <script src="vortex.js"></script>
+    <script>
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+    </script>
 </body>
 </html>
