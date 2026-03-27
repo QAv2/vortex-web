@@ -371,11 +371,6 @@ function createSpectrumBars() {
                 ctx.fillRect(x, peakY - 2, barW, 2);
             }
 
-            // Beat flash
-            if (audio.beatPulse > 0.01) {
-                ctx.fillStyle = rgba(80, 200, 255, audio.beatPulse * 0.12);
-                ctx.fillRect(0, 0, w, h);
-            }
         }
     };
 }
@@ -987,6 +982,178 @@ function createAurora() {
         [20, 240, 100], [40, 200, 160], [30, 180, 220], [80, 120, 255], [140, 60, 220],
         [20, 255, 130], [60, 220, 180], [100, 160, 255], [160, 80, 200], [30, 250, 120]
     ];
+    // Deterministic jitter to break uniform grid
+    const jitter = [];
+    for (let i = 0; i < 20; i++) {
+        jitter[i] = Math.sin(i * 7.3 + i * i * 0.13) * 0.5;
+    }
+
+    // Cached treeline silhouette
+    let treeCanvas, treeW = 0, treeH = 0;
+
+    // Rolling terrain — composite sine waves for natural hill contour
+    function terrain(x, baseY, amplitude, freqSeed) {
+        return baseY
+            + Math.sin(x * 0.003 + freqSeed) * amplitude * 0.5
+            + Math.sin(x * 0.0071 + freqSeed * 1.7) * amplitude * 0.3
+            + Math.sin(x * 0.017 + freqSeed * 3.1) * amplitude * 0.2;
+    }
+
+    // Organic spruce/pine silhouette — asymmetric branch tiers
+    function drawSpruce(g, cx, baseY, treeH, treeW, rand) {
+        const tipY = baseY - treeH;
+        const trunkW = treeW * 0.08;
+        const lean = (rand() - 0.5) * treeW * 0.12;
+        const tiers = 4 + (rand() * 4) | 0;
+
+        g.lineTo(cx - trunkW, baseY);
+        // Left side ascending
+        for (let t = 0; t < tiers; t++) {
+            const frac = (t + 0.3) / tiers;
+            const ty = baseY - treeH * frac;
+            const tierLean = lean * frac;
+            const spread = treeW * 0.5 * (1 - frac * 0.7) * (0.85 + rand() * 0.3);
+            rand(); // consume matching random for right-side symmetry
+            const droop = 3 + rand() * 4;
+            g.lineTo(cx + tierLean - spread, ty + droop);
+            g.lineTo(cx + tierLean - spread * 0.25, ty - rand() * 2);
+        }
+        // Tip — slightly off-center
+        g.lineTo(cx + lean + (rand() - 0.5) * 2, tipY);
+        // Right side descending
+        for (let t = tiers - 1; t >= 0; t--) {
+            const frac = (t + 0.3) / tiers;
+            const ty = baseY - treeH * frac;
+            const tierLean = lean * frac;
+            const spreadR = treeW * 0.5 * (1 - frac * 0.7) * (0.85 + rand() * 0.3);
+            const droop = 3 + rand() * 4;
+            g.lineTo(cx + tierLean + spreadR * 0.25, ty - rand() * 2);
+            g.lineTo(cx + tierLean + spreadR, ty + droop);
+        }
+        g.lineTo(cx + trunkW, baseY);
+    }
+
+    // Dead snag — bare trunk with 1-3 broken limbs
+    function drawSnag(g, cx, baseY, treeH, rand) {
+        const tipY = baseY - treeH;
+        const trunkW = 2 + rand() * 2;
+        g.lineTo(cx - trunkW, baseY);
+        g.lineTo(cx - trunkW * 0.6, tipY + treeH * 0.1);
+        g.lineTo(cx - trunkW * 0.3, tipY);
+        g.lineTo(cx + trunkW * 0.2, tipY + treeH * 0.05);
+        g.lineTo(cx + trunkW * 0.5, tipY + treeH * 0.08);
+        const limbs = 1 + (rand() * 2) | 0;
+        for (let l = 0; l < limbs; l++) {
+            const ly = baseY - treeH * (0.3 + rand() * 0.4);
+            const dir = rand() > 0.5 ? 1 : -1;
+            const len = 6 + rand() * 10;
+            g.lineTo(cx + trunkW * 0.5, ly + 2);
+            g.lineTo(cx + dir * len, ly - 2 - rand() * 4);
+            g.lineTo(cx + trunkW * 0.5, ly - 1);
+        }
+        g.lineTo(cx + trunkW, baseY);
+    }
+
+    // Dense low shrub cluster
+    function drawShrubCluster(g, x, baseY, clusterW, maxH, rand) {
+        const bumps = 2 + (rand() * 3) | 0;
+        const bw = clusterW / bumps;
+        g.lineTo(x, baseY);
+        for (let b = 0; b < bumps; b++) {
+            const bx = x + b * bw;
+            const bh = maxH * (0.4 + rand() * 0.6);
+            const peakX = bx + bw * (0.3 + rand() * 0.4);
+            g.quadraticCurveTo(peakX, baseY - bh, bx + bw, baseY + rand() * 2);
+        }
+    }
+
+    function buildTreeline(w, h) {
+        treeW = w; treeH = h;
+        treeCanvas = document.createElement('canvas');
+        treeCanvas.width = w; treeCanvas.height = h;
+        const g = treeCanvas.getContext('2d');
+
+        let seed = 31417;
+        const rand = () => { seed = (seed * 16807 + 0) % 2147483647; return (seed & 0x7fffffff) / 0x7fffffff; };
+
+        // ─── 4-layer treeline with atmospheric perspective ─────────
+        const layers = [
+            { seed: 11213, baseF: 0.56, scale: 0.35, col: [16, 22, 30], amp: 10, tseed: 0.0 },   // distant
+            { seed: 31417, baseF: 0.59, scale: 0.55, col: [10, 14, 20], amp: 14, tseed: 2.3 },   // mid-far
+            { seed: 54773, baseF: 0.63, scale: 0.75, col: [6, 9, 13],  amp: 12, tseed: 4.7 },    // mid-near
+            { seed: 77713, baseF: 0.67, scale: 1.0,  col: [3, 4, 6],   amp: 8,  tseed: 7.1 }     // foreground
+        ];
+
+        for (const layer of layers) {
+            seed = layer.seed;
+            const baseY0 = h * layer.baseF;
+            const sc = layer.scale;
+            const [lr, lg, lb] = layer.col;
+
+            g.fillStyle = rgb(lr, lg, lb);
+            g.beginPath();
+            g.moveTo(0, h);
+
+            // Start at left edge terrain
+            const startY = terrain(0, baseY0, layer.amp, layer.tseed);
+            g.lineTo(0, startY);
+
+            let x = -5 + rand() * 10;
+            while (x < w + 50) {
+                const groundY = terrain(x, baseY0, layer.amp, layer.tseed);
+                const r = rand();
+
+                if (r < 0.05 && sc > 0.5) {
+                    // Dead snag (rare, only in closer layers)
+                    const snagH = (25 + rand() * 50) * sc;
+                    drawSnag(g, x + 3, groundY, snagH, rand);
+                    x += 8 + rand() * 10;
+                } else if (r < 0.15) {
+                    // Shrub cluster
+                    const cw = (15 + rand() * 25) * sc;
+                    const ch = (10 + rand() * 20) * sc;
+                    drawShrubCluster(g, x, groundY, cw, ch, rand);
+                    x += cw + rand() * 4 * sc;
+                } else if (r < 0.22) {
+                    // Gap — just follow terrain briefly (natural clearing)
+                    const gapW = (8 + rand() * 20) * sc;
+                    g.lineTo(x + gapW, terrain(x + gapW, baseY0, layer.amp, layer.tseed));
+                    x += gapW;
+                } else {
+                    // Spruce/pine — the dominant tree type
+                    const tall = rand() > 0.3;
+                    const treeHeight = tall
+                        ? (50 + rand() * 90) * sc
+                        : (20 + rand() * 35) * sc;
+                    const treeWidth = tall
+                        ? (10 + rand() * 14) * sc
+                        : (8 + rand() * 10) * sc;
+
+                    drawSpruce(g, x + treeWidth * 0.5, groundY, treeHeight, treeWidth, rand);
+
+                    // Clumping: sometimes pack trees tightly, sometimes leave space
+                    const clump = rand();
+                    if (clump < 0.3) {
+                        x += treeWidth * 0.6; // tight cluster
+                    } else if (clump < 0.7) {
+                        x += treeWidth + rand() * 6 * sc; // normal
+                    } else {
+                        x += treeWidth + rand() * 18 * sc; // wider gap
+                    }
+                }
+            }
+
+            // Close path along bottom
+            g.lineTo(w, terrain(w, baseY0, layer.amp, layer.tseed));
+            g.lineTo(w, h);
+            g.closePath();
+            g.fill();
+        }
+
+        // Solid ground fill below foreground layer
+        g.fillStyle = rgb(3, 4, 6);
+        g.fillRect(0, h * 0.72, w, h * 0.28);
+    }
 
     return {
         name: 'Aurora',
@@ -994,45 +1161,96 @@ function createAurora() {
             if (!trail || trail.width !== w || trail.height !== h) {
                 ({ canvas: trail, ctx: tc } = makeTrail(w, h));
             }
+            if (treeW !== w || treeH !== h) buildTreeline(w, h);
             time += dt;
             const da = 1 - Math.pow(1 - 28 / 255, dt * 30);
             tc.fillStyle = rgba(...BG, da);
             tc.fillRect(0, 0, w, h);
 
+            const ribbonCount = clamp(Math.ceil(w / 120), 10, 20);
+            const bpc = Math.max(1, (64 / ribbonCount) | 0);
             const brightness = 1 + audio.beatPulse * 0.3;
-            const bpc = (64 / 10) | 0;
+            const auroraBottom = h * 0.6;
+            const auroraHeight = auroraBottom;
+            const segments = 24;
 
-            for (let c = 0; c < 10; c++) {
+            tc.save();
+            tc.globalCompositeOperation = 'lighter';
+
+            for (let c = 0; c < ribbonCount; c++) {
                 let energy = 0;
-                const lo = c * bpc, hi = Math.min(lo + bpc + 1, 64);
+                const lo = Math.min(c * bpc, 63), hi = Math.min(lo + bpc + 1, 64);
                 for (let b = lo; b < hi; b++) energy += audio.spectrum[b];
                 energy /= (hi - lo);
 
-                const cw = 40 + energy * 80;
-                const ch = h * (0.35 + energy * 0.55);
-                const baseX = (c / 10) * w + w / 20;
-                const [cr, cg, cb] = PALETTE[c];
-                const segments = 8;
+                const ribbonW = w * 0.12 + energy * w * 0.08;
+                const baseX = (c / ribbonCount) * w + w / (2 * ribbonCount) + jitter[c % 20] * w * 0.05;
+                const [cr, cg, cb] = PALETTE[c % 10];
 
-                for (let s = 0; s < segments; s++) {
+                // Build left and right edge control points
+                const leftPts = [], rightPts = [];
+                for (let s = 0; s <= segments; s++) {
                     const t = s / segments;
-                    const undulation = Math.sin(time * 0.35 + c * 0.9 + t * 2.5) * (20 + energy * 30);
-                    const x = baseX + undulation;
-                    const y = t * ch;
-                    const segH = ch / segments;
-                    const falloff = 1 - t * t;
-                    const alpha = clamp(energy * 0.2 * brightness * falloff, 0, 0.6);
+                    const y = auroraBottom - t * auroraHeight;
+                    const undulateL = Math.sin(time * 0.3 + c * 0.7 + t * 3.0) * (w * 0.02 + energy * w * 0.03);
+                    const undulateR = Math.sin(time * 0.3 + c * 0.7 + t * 3.0 + 0.4) * (w * 0.02 + energy * w * 0.03);
+                    leftPts.push({ x: baseX - ribbonW / 2 + undulateL, y });
+                    rightPts.push({ x: baseX + ribbonW / 2 + undulateR, y });
+                }
 
-                    tc.fillStyle = rgba(
-                        Math.min(255, cr * brightness),
-                        Math.min(255, cg * brightness),
-                        Math.min(255, cb * brightness),
-                        alpha
-                    );
-                    tc.fillRect(x - cw / 2, y, cw, segH + 1);
+                // Vertical gradient: bright at bottom, transparent at top
+                const rr = Math.min(255, cr * brightness) | 0;
+                const rg = Math.min(255, cg * brightness) | 0;
+                const rb = Math.min(255, cb * brightness) | 0;
+                const grad = tc.createLinearGradient(0, auroraBottom, 0, 0);
+                grad.addColorStop(0, rgba(rr, rg, rb, clamp(energy * 0.25, 0, 0.45)));
+                grad.addColorStop(0.3, rgba(rr, rg, rb, clamp(energy * 0.12, 0, 0.25)));
+                grad.addColorStop(0.7, rgba(rr, rg, rb, clamp(energy * 0.04, 0, 0.1)));
+                grad.addColorStop(1.0, rgba(rr, rg, rb, 0));
+
+                // Draw curtain as smooth closed path
+                tc.beginPath();
+                tc.moveTo(leftPts[0].x, leftPts[0].y);
+                for (let s = 1; s <= segments; s++) {
+                    const mx = (leftPts[s - 1].x + leftPts[s].x) / 2;
+                    const my = (leftPts[s - 1].y + leftPts[s].y) / 2;
+                    tc.quadraticCurveTo(leftPts[s - 1].x, leftPts[s - 1].y, mx, my);
+                }
+                tc.lineTo(leftPts[segments].x, leftPts[segments].y);
+                tc.lineTo(rightPts[segments].x, rightPts[segments].y);
+                for (let s = segments - 1; s >= 0; s--) {
+                    const mx = (rightPts[s + 1].x + rightPts[s].x) / 2;
+                    const my = (rightPts[s + 1].y + rightPts[s].y) / 2;
+                    tc.quadraticCurveTo(rightPts[s + 1].x, rightPts[s + 1].y, mx, my);
+                }
+                tc.closePath();
+                tc.fillStyle = grad;
+                tc.fill();
+
+                // Vertical rays within the curtain
+                for (let r = 0; r < 3; r++) {
+                    const rayPhase = time * 0.15 + c * 2.1 + r * 1.8;
+                    const rayT = Math.sin(rayPhase) * 0.5 + 0.5;
+                    const bottomUndulate = Math.sin(time * 0.3 + c * 0.7) * (w * 0.02 + energy * w * 0.03);
+                    const rayX = baseX - ribbonW / 2 + rayT * ribbonW + bottomUndulate;
+                    const topUndulate = Math.sin(time * 0.3 + c * 0.7 + 0.7 * 3.0) * (w * 0.02 + energy * w * 0.03);
+                    const rayGrad = tc.createLinearGradient(0, auroraBottom, 0, auroraBottom - auroraHeight * 0.7);
+                    rayGrad.addColorStop(0, rgba(Math.min(255, rr * 1.3) | 0, Math.min(255, rg * 1.3) | 0, Math.min(255, rb * 1.3) | 0, energy * 0.15));
+                    rayGrad.addColorStop(1, rgba(rr, rg, rb, 0));
+                    tc.strokeStyle = rayGrad;
+                    tc.lineWidth = 1.5 + energy * 2;
+                    tc.beginPath();
+                    tc.moveTo(rayX, auroraBottom);
+                    tc.lineTo(rayX + topUndulate, auroraBottom - auroraHeight * 0.7);
+                    tc.stroke();
                 }
             }
+
+            tc.restore();
             ctx.drawImage(trail, 0, 0);
+
+            // Treeline silhouette
+            ctx.drawImage(treeCanvas, 0, 0);
         }
     };
 }
@@ -1098,14 +1316,6 @@ class UI {
         ctx.fillStyle = '#78788c';
         ctx.fillText(modeStr, w - 12, h - hudH + 38);
         ctx.textAlign = 'left';
-
-        // Progress bar
-        ctx.fillStyle = '#282832';
-        ctx.fillRect(0, h - 3, w, 3);
-        if (engine.duration > 0) {
-            ctx.fillStyle = '#50c8ff';
-            ctx.fillRect(0, h - 3, w * (engine.currentTime / engine.duration), 3);
-        }
 
         ctx.restore();
     }
@@ -1208,12 +1418,10 @@ class App {
         document.getElementById('pl-add-btn').addEventListener('click', openPicker);
         fi.addEventListener('change', async () => { await this._loadFiles(fi.files); fi.value = ''; });
 
-        // Click to seek (bottom 20px)
-        this.canvas.addEventListener('click', (e) => {
-            this.ui.activity();
-            if (e.clientY > this.h - 20) this.audio.seek(e.clientX / this.w);
-        });
         this.canvas.addEventListener('mousemove', () => this.ui.activity());
+
+        // Desktop seek bar
+        this._setupDesktopSeek();
 
         // Playlist click
         this.plTracksEl.addEventListener('click', (e) => {
@@ -1378,6 +1586,73 @@ class App {
         this.seekFill.style.width = pct + '%';
     }
 
+    _setupDesktopSeek() {
+        const bar = document.getElementById('desktop-seek');
+        if (!bar) return;
+        this.dsBar = bar;
+        this.dsFill = document.getElementById('ds-fill');
+        this.dsHandle = document.getElementById('ds-handle');
+        this.dsTooltip = document.getElementById('ds-tooltip');
+        this.dsDragging = false;
+
+        const getFrac = (e) => clamp(e.clientX / window.innerWidth, 0, 1);
+
+        const fmtTime = (s) => {
+            const m = (s / 60) | 0;
+            const sec = (s % 60) | 0;
+            return m + ':' + (sec < 10 ? '0' : '') + sec;
+        };
+
+        bar.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            this.dsDragging = true;
+            bar.classList.add('dragging');
+            this.audio.seek(getFrac(e));
+            this.ui.activity();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (this.dsDragging) {
+                this.audio.seek(getFrac(e));
+                this.ui.activity();
+            }
+            // Tooltip position
+            if (bar.matches(':hover') || this.dsDragging) {
+                const frac = clamp(e.clientX / window.innerWidth, 0, 1);
+                const dur = this.audio.duration || 0;
+                this.dsTooltip.textContent = fmtTime(frac * dur);
+                this.dsTooltip.style.left = e.clientX + 'px';
+                this.dsHandle.style.left = (frac * 100) + '%';
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (this.dsDragging) {
+                this.dsDragging = false;
+                bar.classList.remove('dragging');
+            }
+        });
+
+        bar.addEventListener('mousemove', (e) => {
+            const frac = clamp(e.clientX / window.innerWidth, 0, 1);
+            const dur = this.audio.duration || 0;
+            this.dsTooltip.textContent = fmtTime(frac * dur);
+            this.dsTooltip.style.left = e.clientX + 'px';
+            this.dsHandle.style.left = (frac * 100) + '%';
+        });
+    }
+
+    _updateDesktopSeek() {
+        if (!this.dsBar) return;
+        const visible = this.ui.hideTimer > 0 && this.audio.duration > 0;
+        this.dsBar.classList.toggle('visible', visible);
+        if (visible && !this.dsDragging) {
+            const pct = (this.audio.currentTime / this.audio.duration) * 100;
+            this.dsFill.style.width = pct + '%';
+            this.dsHandle.style.left = pct + '%';
+        }
+    }
+
     _handleKey(e) {
         this.ui.activity();
         switch (e.key) {
@@ -1500,6 +1775,9 @@ class App {
             this._updateMobileSeek();
             this._updateMobilePlayBtn();
         }
+
+        // Desktop seek bar
+        this._updateDesktopSeek();
 
         requestAnimationFrame(this._loop);
     }
