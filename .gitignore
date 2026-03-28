@@ -1,2 +1,13 @@
 # Local Netlify folder
 .netlify
+
+# Dependencies
+node_modules/
+
+# Capacitor build directory
+www/
+
+# Android build artifacts
+android/app/build/
+android/.gradle/
+android/local.properties

@@ -1,0 +1,13 @@
+{
+  "appId": "com.joeyv23.vortex",
+  "appName": "Vortex",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#000000",
+    "allowMixedContent": true,
+    "webContainersEnabled": false
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}
