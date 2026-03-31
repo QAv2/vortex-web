@@ -6,7 +6,7 @@
   "license": "ISC",
   "scripts": {
     "serve": "python3 -m http.server 8080",
-    "build": "rm -rf www && mkdir -p www && cp index.html vortex.js sw.js manifest.json icon-*.png www/",
+    "build": "rm -rf www && mkdir -p www && cp index.html vortex.js pcm-injector-worklet.js sw.js manifest.json icon-*.png og-image.png www/",
     "cap:copy": "npm run build && npx cap copy android",
     "cap:sync": "npm run build && npx cap sync android"
   },

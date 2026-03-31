@@ -87,7 +87,6 @@ function formatTime(s) {
     return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
-
 // ═════════════════════════════════════════════════════════════════
 // AUDIO ENGINE
 // ═════════════════════════════════════════════════════════════════
@@ -120,12 +119,19 @@ class AudioEngine {
             energy: 0, beatDetected: false, beatPulse: 0
         };
         this.onTrackChange = null;
+
+        // Live capture state
+        this.mode = 'file';           // 'file' | 'live-system' | 'live-display' | 'live-mic'
+        this.liveSource = null;       // MediaStreamAudioSourceNode for live modes
+        this.liveStream = null;       // MediaStream reference (for cleanup)
+        this.isCapturing = false;
+        this.onLiveCaptureEnd = null;
     }
 
     _computeBandEdges() {
         const edges = [];
         const ratio = FREQ_MAX / FREQ_MIN;
-        const binHz = 44100 / FFT_SIZE;
+        const binHz = (this.actx?.sampleRate || 44100) / FFT_SIZE;
         for (let i = 0; i <= NUM_BANDS; i++) {
             const freq = FREQ_MIN * Math.pow(ratio, i / NUM_BANDS);
             edges.push(Math.round(freq / binHz));
@@ -135,7 +141,7 @@ class AudioEngine {
 
     async init() {
         if (this.actx) return;
-        this.actx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+        this.actx = new (window.AudioContext || window.webkitAudioContext)();
         if (this.actx.state === 'suspended') await this.actx.resume();
 
         this.analyser = this.actx.createAnalyser();
@@ -219,7 +225,7 @@ class AudioEngine {
         this.play();
     }
 
-    get playing() { return this.audio && !this.audio.paused; }
+    get playing() { return this.isCapturing || (this.audio && !this.audio.paused); }
     get currentTime() { return this.audio?.currentTime || 0; }
     get duration() { return this.audio?.duration || 0; }
     get trackName() { return this.tracks[this.currentTrack]?.name || ''; }
@@ -317,6 +323,174 @@ class AudioEngine {
         this.data.beatDetected = this.beatDetected;
         this.data.beatPulse = this.beatPulse;
         return this.data;
+    }
+
+    // ── Live Capture ─────────────────────────────────────────────
+
+    async startLiveCapture(stream, modeName) {
+        if (!this.actx) await this.init();
+
+        // Disconnect file source from analyser (don't destroy it)
+        if (this.source) {
+            try { this.source.disconnect(this.analyser); } catch (e) {}
+        }
+
+        this.liveStream = stream;
+        this.liveSource = this.actx.createMediaStreamSource(stream);
+        this.liveSource.connect(this.analyser);
+
+        // Mute output — the source app is already playing audio
+        this._savedVolume = this.gainNode.gain.value;
+        this.gainNode.gain.value = 0;
+
+        this.mode = modeName;
+        this.isCapturing = true;
+    }
+
+    stopLiveCapture() {
+        if (this.liveSource) {
+            try { this.liveSource.disconnect(this.analyser); } catch (e) {}
+            this.liveSource = null;
+        }
+        if (this.liveStream) {
+            this.liveStream.getTracks().forEach(t => t.stop());
+            this.liveStream = null;
+        }
+
+        // Clean up system capture (WebSocket + worklet + native service)
+        if (this._captureWs) {
+            try { this._captureWs.close(); } catch (e) {}
+            this._captureWs = null;
+        }
+        if (this.pcmWorkletNode) {
+            try { this.pcmWorkletNode.disconnect(this.analyser); } catch (e) {}
+            this.pcmWorkletNode = null;
+        }
+        if (this.mode === 'live-system' && typeof Capacitor !== 'undefined' && Capacitor.Plugins?.AudioCapture) {
+            Capacitor.Plugins.AudioCapture.stopCapture().catch(() => {});
+        }
+
+        this.isCapturing = false;
+        this.mode = 'file';
+
+        // Restore volume and reconnect file source
+        this.gainNode.gain.value = this._savedVolume ?? this.volume;
+        if (this.source) {
+            try { this.source.connect(this.analyser); } catch (e) {}
+        }
+    }
+
+    async startDisplayCapture() {
+        // Firefox does not support audio capture via getDisplayMedia
+        const isFirefox = navigator.userAgent.includes('Firefox');
+        if (isFirefox) {
+            throw new Error('Screen audio capture is not supported in Firefox. Use Chrome or Edge, or try Microphone mode.');
+        }
+
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: true,
+            preferCurrentTab: false,
+            systemAudio: 'include'
+        });
+
+        // Drop video track — we only want audio
+        stream.getVideoTracks().forEach(t => t.stop());
+
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            stream.getTracks().forEach(t => t.stop());
+            throw new Error('No audio track. Make sure to check "Share audio" in the share dialog.');
+        }
+
+        const audioStream = new MediaStream(audioTracks);
+
+        // Handle user clicking browser's "Stop sharing" button
+        audioTracks[0].addEventListener('ended', () => {
+            this.stopLiveCapture();
+            if (this.onLiveCaptureEnd) this.onLiveCaptureEnd();
+        });
+
+        await this.startLiveCapture(audioStream, 'live-display');
+    }
+
+    async startMicCapture() {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false
+            }
+        });
+
+        stream.getAudioTracks()[0].addEventListener('ended', () => {
+            this.stopLiveCapture();
+            if (this.onLiveCaptureEnd) this.onLiveCaptureEnd();
+        });
+
+        // For mic mode, don't mute — there's no other app playing through speakers
+        await this.startLiveCapture(stream, 'live-mic');
+        this.gainNode.gain.value = 0; // still mute to prevent feedback loop
+    }
+
+    async startSystemCapture() {
+        // Native Android AudioPlaybackCapture via Capacitor plugin
+        if (typeof Capacitor === 'undefined' || !Capacitor.Plugins?.AudioCapture) {
+            throw new Error('System audio capture is only available in the Android app');
+        }
+
+        const result = await Capacitor.Plugins.AudioCapture.startCapture();
+        const wsPort = result.port || 8765;
+
+        if (!this.actx) await this.init();
+
+        // Load the PCM injector worklet
+        await this.actx.audioWorklet.addModule('pcm-injector-worklet.js');
+        this.pcmWorkletNode = new AudioWorkletNode(this.actx, 'pcm-injector-processor');
+
+        // Disconnect file source from analyser
+        if (this.source) {
+            try { this.source.disconnect(this.analyser); } catch (e) {}
+        }
+
+        // Connect worklet → analyser
+        this.pcmWorkletNode.connect(this.analyser);
+
+        // Mute output — the source app is already playing audio
+        this._savedVolume = this.gainNode.gain.value;
+        this.gainNode.gain.value = 0;
+
+        // Open WebSocket to the native service
+        this._captureWs = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+        this._captureWs.binaryType = 'arraybuffer';
+        this._captureWs.onmessage = (e) => {
+            const pcm = new Float32Array(e.data);
+            this.pcmWorkletNode.port.postMessage(pcm);
+        };
+        this._captureWs.onerror = () => {
+            this.stopLiveCapture();
+            if (this.onLiveCaptureEnd) this.onLiveCaptureEnd();
+        };
+        this._captureWs.onclose = () => {
+            if (this.isCapturing && this.mode === 'live-system') {
+                this.stopLiveCapture();
+                if (this.onLiveCaptureEnd) this.onLiveCaptureEnd();
+            }
+        };
+
+        this.mode = 'live-system';
+        this.isCapturing = true;
+    }
+
+    static detectCapabilities() {
+        const isCapacitor = typeof Capacitor !== 'undefined' && Capacitor.isNativePlatform?.();
+        const isAndroid = isCapacitor && Capacitor.getPlatform() === 'android';
+        return {
+            filePlayback: true,
+            systemCapture: isAndroid,
+            displayCapture: !isCapacitor && !!(navigator.mediaDevices?.getDisplayMedia),
+            micCapture: !!(navigator.mediaDevices?.getUserMedia)
+        };
     }
 }
 
@@ -972,16 +1146,18 @@ function createStarfield() {
 }
 
 
+// Aurora / Govee palette — shared between Aurora preset and Govee bridge
+const PALETTE = [
+    [20, 240, 100], [40, 200, 160], [30, 180, 220], [80, 120, 255], [140, 60, 220],
+    [20, 255, 130], [60, 220, 180], [100, 160, 255], [160, 80, 200], [30, 250, 120]
+];
+
 // ═════════════════════════════════════════════════════════════════
 // PRESET 10: AURORA
 // ═════════════════════════════════════════════════════════════════
 function createAurora() {
     let trail, tc;
     let time = 0;
-    const PALETTE = [
-        [20, 240, 100], [40, 200, 160], [30, 180, 220], [80, 120, 255], [140, 60, 220],
-        [20, 255, 130], [60, 220, 180], [100, 160, 255], [160, 80, 200], [30, 250, 120]
-    ];
     // Deterministic jitter to break uniform grid
     const jitter = [];
     for (let i = 0; i < 20; i++) {
@@ -1255,6 +1431,165 @@ function createAurora() {
     };
 }
 
+function createSupportScreen() {
+    let hoverBtn = false;
+    const BMC_URL = 'https://buymeacoffee.com/joeyv23';
+    const particles = [];
+    for (let i = 0; i < 60; i++) {
+        particles.push({
+            x: Math.random(), y: Math.random(),
+            vx: (Math.random() - 0.5) * 0.02,
+            vy: (Math.random() - 0.5) * 0.02,
+            size: 1 + Math.random() * 2,
+            alpha: 0.1 + Math.random() * 0.3,
+            hue: 180 + Math.random() * 60
+        });
+    }
+
+    const screen = {
+        name: 'Support',
+        isSupportScreen: true,
+        btnRect: null,
+
+        render(ctx, audio, dt, w, h) {
+            // Background
+            ctx.fillStyle = rgb(...BG);
+            ctx.fillRect(0, 0, w, h);
+
+            // Ambient floating particles
+            for (const p of particles) {
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                if (p.x < 0 || p.x > 1) p.vx *= -1;
+                if (p.y < 0 || p.y > 1) p.vy *= -1;
+                ctx.beginPath();
+                ctx.arc(p.x * w, p.y * h, p.size, 0, Math.PI * 2);
+                ctx.fillStyle = `hsla(${p.hue}, 80%, 60%, ${p.alpha})`;
+                ctx.fill();
+            }
+
+            // Respond to audio if playing
+            const energy = audio.energy || 0;
+            const glowAlpha = 0.05 + energy * 0.15;
+
+            // Radial glow behind content
+            const grad = ctx.createRadialGradient(w / 2, h * 0.38, 0, w / 2, h * 0.38, w * 0.35);
+            grad.addColorStop(0, `rgba(80, 200, 255, ${glowAlpha})`);
+            grad.addColorStop(1, 'transparent');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, w, h);
+
+            const compact = w < 500;
+            const cx = w / 2;
+
+            // Vortex icon (simple spiral)
+            const iconY = h * 0.22;
+            const iconR = compact ? 28 : 40;
+            ctx.save();
+            ctx.strokeStyle = 'rgba(80, 200, 255, 0.7)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let a = 0; a < Math.PI * 6; a += 0.1) {
+                const r = iconR * (a / (Math.PI * 6));
+                const x = cx + Math.cos(a) * r;
+                const y = iconY + Math.sin(a) * r;
+                a === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+            ctx.restore();
+
+            // Title
+            const titleSize = compact ? 20 : 32;
+            ctx.font = `bold ${titleSize}px "Courier New", monospace`;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+            ctx.textAlign = 'center';
+            ctx.fillText('Enjoying Vortex?', cx, iconY + iconR + (compact ? 30 : 45));
+
+            // Subtitle
+            const subSize = compact ? 12 : 16;
+            ctx.font = `${subSize}px "Courier New", monospace`;
+            ctx.fillStyle = 'rgba(180, 220, 255, 0.7)';
+            const subY = iconY + iconR + (compact ? 50 : 75);
+            ctx.fillText('Vortex is free and open source.', cx, subY);
+            ctx.fillText('If you dig it, consider buying me a coffee.', cx, subY + subSize + 6);
+
+            // Button
+            const btnW = compact ? 200 : 260;
+            const btnH = compact ? 44 : 52;
+            const btnX = cx - btnW / 2;
+            const btnY = subY + (compact ? 40 : 60);
+            const btnR = 8;
+
+            // Button glow on hover
+            if (hoverBtn) {
+                ctx.shadowColor = 'rgba(255, 221, 0, 0.4)';
+                ctx.shadowBlur = 20;
+            }
+
+            // Button background — BMC yellow
+            ctx.beginPath();
+            ctx.roundRect(btnX, btnY, btnW, btnH, btnR);
+            ctx.fillStyle = hoverBtn ? '#ffe940' : '#ffdd00';
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            // Coffee cup icon (simple)
+            const cupX = btnX + (compact ? 18 : 24);
+            const cupY = btnY + btnH / 2;
+            const cupS = compact ? 8 : 10;
+            ctx.fillStyle = '#0d0d0d';
+            ctx.fillRect(cupX - cupS / 2, cupY - cupS / 2, cupS, cupS * 1.1);
+            ctx.strokeStyle = '#0d0d0d';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(cupX + cupS / 2 + 2, cupY, cupS * 0.4, -Math.PI / 2, Math.PI / 2);
+            ctx.stroke();
+            // Steam
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 3; i++) {
+                const sx = cupX - cupS / 4 + i * (cupS / 2.5);
+                ctx.beginPath();
+                ctx.moveTo(sx, cupY - cupS / 2 - 2);
+                ctx.quadraticCurveTo(sx + 2, cupY - cupS / 2 - 6, sx, cupY - cupS / 2 - 10);
+                ctx.stroke();
+            }
+
+            // Button text
+            const btnFontSize = compact ? 14 : 17;
+            ctx.font = `bold ${btnFontSize}px "Courier New", monospace`;
+            ctx.fillStyle = '#0d0d0d';
+            ctx.textAlign = 'center';
+            ctx.fillText('Buy Me a Coffee', cx + (compact ? 6 : 8), btnY + btnH / 2 + btnFontSize / 3);
+
+            screen.btnRect = { x: btnX, y: btnY, w: btnW, h: btnH };
+
+            // Footer
+            const footSize = compact ? 10 : 12;
+            ctx.font = `${footSize}px "Courier New", monospace`;
+            ctx.fillStyle = 'rgba(140, 160, 180, 0.5)';
+            ctx.textAlign = 'center';
+            ctx.fillText('← swipe to return to visualizers →', cx, h - (compact ? 30 : 40));
+
+            ctx.textAlign = 'left';
+        },
+
+        handleClick(x, y) {
+            const r = screen.btnRect;
+            if (r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+                window.open(BMC_URL, '_blank');
+                return true;
+            }
+            return false;
+        },
+
+        handleMove(x, y) {
+            const r = screen.btnRect;
+            hoverBtn = r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+        }
+    };
+    return screen;
+}
+
 
 // ═════════════════════════════════════════════════════════════════
 // HUD / UI
@@ -1267,7 +1602,7 @@ class UI {
 
     activity() { this.hideTimer = 5; }
 
-    toast(text) { this.toasts.push({ text, time: 1.5 }); }
+    toast(text, duration) { this.toasts.push({ text, time: duration || 1.5 }); }
 
     render(ctx, engine, presetName, dt, w, h) {
         // Toast notifications (always visible)
@@ -1277,10 +1612,35 @@ class UI {
             if (t.time <= 0) { this.toasts.splice(i, 1); continue; }
             ctx.save();
             ctx.globalAlpha = t.time < 0.5 ? t.time / 0.5 : 1;
-            ctx.font = '24px "Courier New", monospace';
+            const fontSize = w < 500 ? 13 : 22;
+            const lineH = fontSize + 6;
+            ctx.font = `${fontSize}px "Courier New", monospace`;
+            // Word-wrap toast text to fit screen
+            const maxW = w - 40;
+            const words = t.text.split(' ');
+            const lines = [];
+            let line = '';
+            for (const word of words) {
+                const test = line ? line + ' ' + word : word;
+                if (ctx.measureText(test).width > maxW && line) {
+                    lines.push(line);
+                    line = word;
+                } else {
+                    line = test;
+                }
+            }
+            if (line) lines.push(line);
+            // Background box
+            const boxH = lines.length * lineH + 16;
+            const boxW = Math.min(maxW + 24, w - 16);
+            ctx.fillStyle = 'rgba(0,0,0,0.75)';
+            ctx.fillRect((w - boxW) / 2, 24, boxW, boxH);
+            // Text
             ctx.textAlign = 'center';
             ctx.fillStyle = '#dcdce6';
-            ctx.fillText(t.text, w / 2, 50);
+            for (let j = 0; j < lines.length; j++) {
+                ctx.fillText(lines[j], w / 2, 46 + j * lineH);
+            }
             ctx.restore();
         }
 
@@ -1297,12 +1657,25 @@ class UI {
         ctx.fillRect(0, h - hudH, w, hudH);
 
         ctx.font = '14px "Courier New", monospace';
-        ctx.fillStyle = '#dcdce6';
-        const status = engine.playing ? '\u25B6' : '\u23F8';
-        const name = engine.trackName || 'No track';
-        const num = engine.trackCount > 0 ? `[${engine.currentTrack + 1}/${engine.trackCount}]` : '';
-        const timeStr = `${formatTime(engine.currentTime)} / ${formatTime(engine.duration)}`;
-        ctx.fillText(`${status}  ${name}  ${num}  ${timeStr}`, 12, h - hudH + 20);
+
+        if (engine.isCapturing) {
+            // Live capture HUD — pulsing red dot + mode label
+            const pulse = 0.6 + 0.4 * Math.sin(Date.now() / 300);
+            ctx.fillStyle = `rgba(255, 60, 60, ${pulse})`;
+            ctx.beginPath();
+            ctx.arc(18, h - hudH + 18, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#dcdce6';
+            const modeLabel = { 'live-system': 'System Audio', 'live-display': 'Screen Audio', 'live-mic': 'Microphone' };
+            ctx.fillText(`LIVE: ${modeLabel[engine.mode] || 'Capture'}`, 30, h - hudH + 20);
+        } else {
+            ctx.fillStyle = '#dcdce6';
+            const status = engine.playing ? '\u25B6' : '\u23F8';
+            const name = engine.trackName || 'No track';
+            const num = engine.trackCount > 0 ? `[${engine.currentTrack + 1}/${engine.trackCount}]` : '';
+            const timeStr = `${formatTime(engine.currentTime)} / ${formatTime(engine.duration)}`;
+            ctx.fillText(`${status}  ${name}  ${num}  ${timeStr}`, 12, h - hudH + 20);
+        }
 
         // Preset name
         ctx.textAlign = 'right';
@@ -1341,7 +1714,8 @@ class App {
             createLissajous(),
             createSacredGeometry(),
             createStarfield(),
-            createAurora()
+            createAurora(),
+            createSupportScreen()
         ];
         this.currentPreset = 0;
         this.lastTime = 0;
@@ -1378,6 +1752,36 @@ class App {
         this.audio.onTrackChange = () => { this._updatePlaylist(); this._updateMobilePlayBtn(); };
         this._loop = this._loop.bind(this);
         requestAnimationFrame(this._loop);
+
+        // Govee Aurora Bridge — optional WebSocket to sync lights
+        this._goveeWs = null;
+        this._goveeConnecting = false;
+        this._connectGoveeBridge();
+    }
+
+    _connectGoveeBridge() {
+        if (this._goveeConnecting) return;
+        this._goveeConnecting = true;
+        try {
+            const ws = new WebSocket('ws://localhost:9876');
+            ws.onopen = () => {
+                this._goveeWs = ws;
+                this._goveeConnecting = false;
+                this.ui.toast('Govee bridge connected');
+                console.log('[Govee] Connected to aurora bridge');
+            };
+            ws.onclose = () => {
+                this._goveeWs = null;
+                this._goveeConnecting = false;
+                setTimeout(() => this._connectGoveeBridge(), 5000);
+            };
+            ws.onerror = () => {
+                ws.close();
+            };
+        } catch (e) {
+            this._goveeConnecting = false;
+            setTimeout(() => this._connectGoveeBridge(), 5000);
+        }
     }
 
     _resize() {
@@ -1407,18 +1811,40 @@ class App {
         });
 
         // Browse / Add files buttons — all trigger the same file input
-        // IMPORTANT: init AudioContext during the tap (user gesture) — iOS blocks
-        // AudioContext creation in the file input 'change' handler
+        // AudioContext init moved to _loadFiles (change handler) so fi.click()
+        // stays synchronous with the user gesture — Firefox blocks it otherwise
         const fi = document.getElementById('file-input');
-        const openPicker = async () => {
-            if (!this.audio.actx) await this.audio.init();
+        const openPicker = () => {
             fi.click();
         };
         document.getElementById('browse-btn').addEventListener('click', openPicker);
         document.getElementById('pl-add-btn').addEventListener('click', openPicker);
         fi.addEventListener('change', async () => { await this._loadFiles(fi.files); fi.value = ''; });
 
-        this.canvas.addEventListener('mousemove', () => this.ui.activity());
+        this.canvas.addEventListener('mousemove', (e) => {
+            this.ui.activity();
+            const preset = this.presets[this.currentPreset];
+            if (preset.handleMove) {
+                const rect = this.canvas.getBoundingClientRect();
+                preset.handleMove(e.clientX - rect.left, e.clientY - rect.top);
+                this.canvas.style.cursor = preset.isSupportScreen && preset.btnRect &&
+                    e.clientX - rect.left >= preset.btnRect.x && e.clientX - rect.left <= preset.btnRect.x + preset.btnRect.w &&
+                    e.clientY - rect.top >= preset.btnRect.y && e.clientY - rect.top <= preset.btnRect.y + preset.btnRect.h
+                    ? 'pointer' : '';
+            } else {
+                this.canvas.style.cursor = '';
+            }
+        });
+        this.canvas.addEventListener('click', (e) => {
+            const preset = this.presets[this.currentPreset];
+            if (preset.handleClick) {
+                const rect = this.canvas.getBoundingClientRect();
+                preset.handleClick(e.clientX - rect.left, e.clientY - rect.top);
+            }
+        });
+
+        // Live audio picker
+        this._setupLivePicker();
 
         // Desktop seek bar
         this._setupDesktopSeek();
@@ -1442,6 +1868,123 @@ class App {
         else if (added > 0) this.ui.toast(`+${added} track${added > 1 ? 's' : ''} added`);
         this._updatePlaylist();
         if (this.isMobile) this._showMobileControls();
+    }
+
+    _setupLivePicker() {
+        const picker = document.getElementById('live-picker');
+        const caps = AudioEngine.detectCapabilities();
+
+        // Disable unavailable options
+        if (!caps.displayCapture) document.getElementById('lp-display').disabled = true;
+        if (!caps.micCapture) document.getElementById('lp-mic').disabled = true;
+        if (!caps.systemCapture) document.getElementById('lp-system').disabled = true;
+
+        document.getElementById('live-btn').addEventListener('click', () => {
+            picker.classList.add('active');
+        });
+
+        document.getElementById('lp-cancel').addEventListener('click', () => {
+            picker.classList.remove('active');
+        });
+
+        // Callback when live capture ends externally (browser stop-sharing, etc.)
+        this.audio.onLiveCaptureEnd = () => {
+            this.ui.toast('Live capture ended');
+            this._onLiveStopped();
+        };
+
+        document.getElementById('lp-display').addEventListener('click', async () => {
+            picker.classList.remove('active');
+            try {
+                // Check Firefox before any async work
+                if (navigator.userAgent.includes('Firefox')) {
+                    this.ui.toast('Screen audio not supported in Firefox. Use Chrome/Edge or try Microphone.', 4);
+                    return;
+                }
+                // Request display media FIRST — must stay in user gesture stack
+                const stream = await navigator.mediaDevices.getDisplayMedia({
+                    video: true,
+                    audio: true,
+                    preferCurrentTab: false,
+                    systemAudio: 'include'
+                });
+                stream.getVideoTracks().forEach(t => t.stop());
+                const audioTracks = stream.getAudioTracks();
+                if (audioTracks.length === 0) {
+                    stream.getTracks().forEach(t => t.stop());
+                    this.ui.toast('No audio track. Check "Share audio" in the share dialog.', 4);
+                    return;
+                }
+                if (!this.audio.actx) await this.audio.init();
+                const audioStream = new MediaStream(audioTracks);
+                audioTracks[0].addEventListener('ended', () => {
+                    this.audio.stopLiveCapture();
+                    if (this.audio.onLiveCaptureEnd) this.audio.onLiveCaptureEnd();
+                });
+                await this.audio.startLiveCapture(audioStream, 'live-display');
+                this._onLiveStarted();
+            } catch (e) {
+                console.warn('[Vortex] Display capture error:', e);
+                this.ui.toast(e.message || 'Capture failed', 4);
+            }
+        });
+
+        document.getElementById('lp-mic').addEventListener('click', async () => {
+            picker.classList.remove('active');
+            try {
+                // Request mic FIRST — must be in the user gesture call stack
+                // before any async work, or mobile Chrome blocks it
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    }
+                });
+                if (!this.audio.actx) await this.audio.init();
+                stream.getAudioTracks()[0].addEventListener('ended', () => {
+                    this.audio.stopLiveCapture();
+                    if (this.audio.onLiveCaptureEnd) this.audio.onLiveCaptureEnd();
+                });
+                await this.audio.startLiveCapture(stream, 'live-mic');
+                this.audio.gainNode.gain.value = 0;
+                this._onLiveStarted();
+            } catch (e) {
+                console.warn('[Vortex] Mic capture error:', e);
+                this.ui.toast(e.message || 'Mic access denied', 4);
+            }
+        });
+
+        document.getElementById('lp-system').addEventListener('click', async () => {
+            try {
+                await this.audio.startSystemCapture();
+                this._onLiveStarted();
+            } catch (e) {
+                this.ui.toast(e.message || 'System capture failed', 4);
+            }
+            picker.classList.remove('active');
+        });
+    }
+
+    _onLiveStarted() {
+        document.getElementById('live-picker').classList.remove('active');
+        document.getElementById('welcome').style.display = 'none';
+        this.ui.activity();
+        const modeLabel = { 'live-system': 'System Audio', 'live-display': 'Screen Audio', 'live-mic': 'Microphone' };
+        this.ui.toast(`LIVE: ${modeLabel[this.audio.mode] || 'Capture'}`);
+        if (this.isMobile) this._showMobileControls();
+    }
+
+    _onLiveStopped() {
+        this.ui.activity();
+    }
+
+    _stopLiveCapture() {
+        if (this.audio.isCapturing) {
+            this.audio.stopLiveCapture();
+            this.ui.toast('Live capture stopped');
+            this._onLiveStopped();
+        }
     }
 
     _switchPreset(idx) {
@@ -1493,8 +2036,14 @@ class App {
                 if (dx > 0) this._switchPreset((this.currentPreset - 1 + this.presets.length) % this.presets.length);
                 else this._switchPreset((this.currentPreset + 1) % this.presets.length);
             } else if (Math.abs(dx) < 20 && Math.abs(dy) < 20 && elapsed < 300) {
-                // Tap → toggle mobile controls
-                if (this.mobileVisible) this._hideMobileControls();
+                // Tap — check support screen button first, then toggle controls
+                const preset = this.presets[this.currentPreset];
+                const tx = e.changedTouches[0].clientX;
+                const ty = e.changedTouches[0].clientY;
+                const rect = this.canvas.getBoundingClientRect();
+                if (preset.handleClick && preset.handleClick(tx - rect.left, ty - rect.top)) {
+                    // Button was tapped, don't toggle controls
+                } else if (this.mobileVisible) this._hideMobileControls();
                 else this._showMobileControls();
             }
         }, { passive: true });
@@ -1541,8 +2090,7 @@ class App {
             this.ui.toast(`Volume ${Math.round(this.audio.volume * 100)}%`);
             this._resetMobileHideTimer();
         });
-        document.getElementById('mc-add').addEventListener('click', async () => {
-            if (!this.audio.actx) await this.audio.init();
+        document.getElementById('mc-add').addEventListener('click', () => {
             document.getElementById('file-input').click();
             this._resetMobileHideTimer();
         });
@@ -1597,12 +2145,6 @@ class App {
 
         const getFrac = (e) => clamp(e.clientX / window.innerWidth, 0, 1);
 
-        const fmtTime = (s) => {
-            const m = (s / 60) | 0;
-            const sec = (s % 60) | 0;
-            return m + ':' + (sec < 10 ? '0' : '') + sec;
-        };
-
         bar.addEventListener('mousedown', (e) => {
             e.preventDefault();
             this.dsDragging = true;
@@ -1620,7 +2162,7 @@ class App {
             if (bar.matches(':hover') || this.dsDragging) {
                 const frac = clamp(e.clientX / window.innerWidth, 0, 1);
                 const dur = this.audio.duration || 0;
-                this.dsTooltip.textContent = fmtTime(frac * dur);
+                this.dsTooltip.textContent = formatTime(frac * dur);
                 this.dsTooltip.style.left = e.clientX + 'px';
                 this.dsHandle.style.left = (frac * 100) + '%';
             }
@@ -1636,7 +2178,7 @@ class App {
         bar.addEventListener('mousemove', (e) => {
             const frac = clamp(e.clientX / window.innerWidth, 0, 1);
             const dur = this.audio.duration || 0;
-            this.dsTooltip.textContent = fmtTime(frac * dur);
+            this.dsTooltip.textContent = formatTime(frac * dur);
             this.dsTooltip.style.left = e.clientX + 'px';
             this.dsHandle.style.left = (frac * 100) + '%';
         });
@@ -1706,9 +2248,15 @@ class App {
             case 'l': case 'L':
                 this.playlistEl.classList.toggle('active');
                 break;
+            case 'c': case 'C':
+                if (this.audio.isCapturing) this._stopLiveCapture();
+                else document.getElementById('live-picker').classList.add('active');
+                break;
             case 'Escape':
                 this.helpEl.classList.remove('active');
                 this.playlistEl.classList.remove('active');
+                document.getElementById('live-picker').classList.remove('active');
+                this._stopLiveCapture();
                 break;
         }
         // Number keys → preset select (1–9 = preset 1–9, 0 = preset 10)
@@ -1732,7 +2280,7 @@ class App {
         if (this.autoCycle && audioData.beatDetected && this.autoCycleTimer >= this.autoCycleInterval) {
             this.autoCycleTimer = 0;
             let next;
-            do { next = Math.floor(Math.random() * this.presets.length); } while (next === this.currentPreset && this.presets.length > 1);
+            do { next = Math.floor(Math.random() * this.presets.length); } while ((next === this.currentPreset || this.presets[next].isSupportScreen) && this.presets.length > 1);
             this._switchPreset(next);
         }
 
@@ -1767,6 +2315,25 @@ class App {
         }
 
         this.ui.render(this.ctx, this.audio, preset.name, dt, this.w, this.h);
+
+        // Broadcast aurora state to Govee bridge
+        if (this._goveeWs && this._goveeWs.readyState === 1 && preset.name === 'Aurora') {
+            const rc = 10, bpc = Math.max(1, (64 / rc) | 0);
+            const curtains = [];
+            for (let c = 0; c < rc; c++) {
+                let e = 0;
+                const lo = Math.min(c * bpc, 63), hi = Math.min(lo + bpc + 1, 64);
+                for (let b = lo; b < hi; b++) e += audioData.spectrum[b];
+                e /= (hi - lo);
+                curtains.push({ r: PALETTE[c][0], g: PALETTE[c][1], b: PALETTE[c][2], energy: e });
+            }
+            this._goveeWs.send(JSON.stringify({
+                type: 'aurora', curtains,
+                beatPulse: audioData.beatPulse,
+                beatDetected: audioData.beatDetected,
+                energy: audioData.energy
+            }));
+        }
 
         // Mobile: auto-hide controls, update seek bar
         if (this.isMobile && this.mobileVisible) {

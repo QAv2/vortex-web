@@ -362,6 +362,89 @@
             font-size: 13px;
             text-align: center;
         }
+
+        /* ── Live Audio Button ── */
+        #live-btn {
+            background: rgba(255, 60, 60, 0.10);
+            border: 1px solid rgba(255, 60, 60, 0.35);
+            color: #ff5050;
+            padding: 14px 36px;
+            font-family: inherit;
+            font-size: 15px;
+            cursor: pointer;
+            transition: background 0.2s;
+            letter-spacing: 2px;
+        }
+        #live-btn:hover { background: rgba(255, 60, 60, 0.22); }
+
+        /* ── Live Source Picker ── */
+        #live-picker {
+            position: fixed;
+            inset: 0;
+            background: rgba(8, 8, 12, 0.94);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 90;
+        }
+        #live-picker.active { display: flex; }
+        #live-picker .lp-content {
+            max-width: 400px;
+            width: 90%;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        #live-picker h2 {
+            color: #ff5050;
+            font-size: 24px;
+            font-weight: 300;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+        .lp-option {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #dcdce6;
+            padding: 16px;
+            font-family: inherit;
+            cursor: pointer;
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            transition: background 0.2s, border-color 0.2s;
+        }
+        .lp-option:hover {
+            background: rgba(255, 60, 60, 0.08);
+            border-color: rgba(255, 60, 60, 0.3);
+        }
+        .lp-option:disabled {
+            opacity: 0.25;
+            cursor: not-allowed;
+        }
+        .lp-option:disabled:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.08);
+        }
+        .lp-icon { font-size: 18px; }
+        .lp-label { font-size: 15px; letter-spacing: 1px; }
+        .lp-desc { font-size: 11px; color: #78788c; }
+        .lp-cancel {
+            background: none;
+            border: 1px solid rgba(120, 120, 140, 0.3);
+            color: #78788c;
+            padding: 10px;
+            font-family: inherit;
+            font-size: 14px;
+            cursor: pointer;
+            letter-spacing: 2px;
+            margin-top: 4px;
+            transition: color 0.2s;
+        }
+        .lp-cancel:hover { color: #dcdce6; }
     </style>
 </head>
 <body>
@@ -371,6 +454,7 @@
         <h1>Vortex</h1>
         <p class="sub">Real-time music visualizer</p>
         <button id="browse-btn">Browse Files</button>
+        <button id="live-btn">Live Audio</button>
         <p class="sub drag-hint">or drag &amp; drop audio files anywhere</p>
         <div class="keys">
             Space: play/pause &bull; &larr;&rarr;: presets &bull; &uarr;&darr;: volume<br>
@@ -396,10 +480,33 @@
             <div class="help-row"><span class="help-key">1 &ndash; 9, 0</span><span class="help-desc">Select Preset</span></div>
             <div class="help-row"><span class="help-key">A</span><span class="help-desc">Auto-Cycle (beat-synced)</span></div>
             <div class="help-row"><span class="help-key">F</span><span class="help-desc">Fullscreen</span></div>
+            <div class="help-section">Live Capture</div>
+            <div class="help-row"><span class="help-key">C</span><span class="help-desc">Live Audio / Stop Capture</span></div>
             <div class="help-section">Panels</div>
             <div class="help-row"><span class="help-key">L</span><span class="help-desc">Playlist</span></div>
             <div class="help-row"><span class="help-key">H / ?</span><span class="help-desc">This Help Screen</span></div>
             <div style="text-align:center;margin-top:24px;color:#3a3a50;font-size:12px;">Press H or ? to close</div>
+        </div>
+    </div>
+    <div id="live-picker">
+        <div class="lp-content">
+            <h2>Live Audio Source</h2>
+            <button id="lp-display" class="lp-option">
+                <span class="lp-icon">&#9654;</span>
+                <span class="lp-label">Screen / Tab Audio</span>
+                <span class="lp-desc">Capture audio from another tab or app (Desktop Chrome/Edge)</span>
+            </button>
+            <button id="lp-mic" class="lp-option">
+                <span class="lp-icon">&#127908;</span>
+                <span class="lp-label">Microphone</span>
+                <span class="lp-desc">Visualize audio picked up by your mic</span>
+            </button>
+            <button id="lp-system" class="lp-option">
+                <span class="lp-icon">&#128266;</span>
+                <span class="lp-label">System Audio</span>
+                <span class="lp-desc">Capture all device audio (Android app only)</span>
+            </button>
+            <button id="lp-cancel" class="lp-cancel">Cancel</button>
         </div>
     </div>
     <div id="playlist-panel">

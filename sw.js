@@ -1,9 +1,10 @@
 // Vortex Service Worker — offline caching
-const CACHE_NAME = 'vortex-v1';
+const CACHE_NAME = 'vortex-v4';
 const ASSETS = [
   '/',
   '/index.html',
   '/vortex.js',
+  '/pcm-injector-worklet.js',
   '/manifest.json',
   '/icon-192.png',
   '/icon-512.png'
