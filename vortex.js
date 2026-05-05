@@ -1753,10 +1753,14 @@ class App {
         this._loop = this._loop.bind(this);
         requestAnimationFrame(this._loop);
 
-        // Govee Aurora Bridge — optional WebSocket to sync lights
+        // Govee Aurora Bridge — optional WebSocket to sync lights.
+        // Local-dev only: the bridge server runs on the operator's machine,
+        // so visitors at the public URL would hit a permanent reconnect loop
+        // against their own localhost. Gate to localhost / 127.0.0.1.
         this._goveeWs = null;
         this._goveeConnecting = false;
-        this._connectGoveeBridge();
+        const isLocal = ['localhost', '127.0.0.1', '0.0.0.0'].includes(location.hostname);
+        if (isLocal) this._connectGoveeBridge();
     }
 
     _connectGoveeBridge() {
@@ -1768,7 +1772,6 @@ class App {
                 this._goveeWs = ws;
                 this._goveeConnecting = false;
                 this.ui.toast('Govee bridge connected');
-                console.log('[Govee] Connected to aurora bridge');
             };
             ws.onclose = () => {
                 this._goveeWs = null;
@@ -2002,10 +2005,11 @@ class App {
             this.plTracksEl.innerHTML = '<div class="pl-empty">No tracks loaded</div>';
             return;
         }
+        const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         let html = '';
         for (let i = 0; i < tracks.length; i++) {
             const cls = i === current ? 'pl-track active' : 'pl-track';
-            html += `<div class="${cls}" data-idx="${i}">${i + 1}. ${tracks[i].name}</div>`;
+            html += `<div class="${cls}" data-idx="${i}">${i + 1}. ${esc(tracks[i].name)}</div>`;
         }
         this.plTracksEl.innerHTML = html;
         const active = this.plTracksEl.querySelector('.pl-track.active');
