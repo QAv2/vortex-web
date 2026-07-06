@@ -1431,6 +1431,557 @@ function createAurora() {
     };
 }
 
+
+// ═════════════════════════════════════════════════════════════════
+// PRESET 11: MURMURATION
+// ═════════════════════════════════════════════════════════════════
+// A flock of hundreds moving as one organism. Bass pulls the flock
+// together, mids align it into streams, treble scatters nervous
+// energy through it, beats burst it apart. When the flock flies in
+// true coherence, an eye opens at its heart and the swarm orbits it.
+function createMurmuration() {
+    const N = 420;
+    const bx = new Float32Array(N), by = new Float32Array(N);
+    const bvx = new Float32Array(N), bvy = new Float32Array(N);
+    const isGold = new Uint8Array(N);
+    for (let i = 0; i < N; i++) if (i % 24 === 0) isGold[i] = 1;
+    let seeded = false;
+
+    // Spatial hash grid for neighbor lookup
+    const CELL = 48;
+    let gridW = 0, gridH = 0, cellHead = null;
+    const cellNext = new Int32Array(N);
+
+    let t = 0;                       // attractor wander clock
+    let eyeCharge = 0;               // coherence builds this toward 1
+    let eyeTimer = 0;                // seconds the eye stays open
+    let eyeOpen = 0;                 // eased openness 0..1
+    let eyeCooldown = 0;
+    let eyeX = 0, eyeY = 0;
+    let trail, tc;
+
+    return {
+        name: 'Murmuration',
+        render(ctx, audio, dt, w, h) {
+            if (!trail || trail.width !== w || trail.height !== h) {
+                ({ canvas: trail, ctx: tc } = makeTrail(w, h));
+                gridW = Math.ceil(w / CELL) + 1;
+                gridH = Math.ceil(h / CELL) + 1;
+                cellHead = new Int32Array(gridW * gridH);
+            }
+            if (!seeded) {
+                for (let i = 0; i < N; i++) {
+                    bx[i] = w * (0.3 + Math.random() * 0.4);
+                    by[i] = h * (0.3 + Math.random() * 0.4);
+                    const a = Math.random() * Math.PI * 2;
+                    bvx[i] = Math.cos(a) * 80; bvy[i] = Math.sin(a) * 80;
+                }
+                seeded = true;
+            }
+
+            const bass = audio.bass, mid = audio.mid, treble = audio.treble;
+            const energy = audio.energy, beat = audio.beatPulse;
+
+            // Silky trails, brighter decay when loud
+            const da = 1 - Math.pow(1 - (15 + energy * 12) / 255, dt * 30);
+            tc.fillStyle = rgba(...BG, da);
+            tc.fillRect(0, 0, w, h);
+
+            // Wandering attractor (or the eye, when open)
+            t += dt * (0.5 + energy * 1.3);
+            let ax = w * (0.5 + 0.22 * Math.sin(t * 0.43) * Math.cos(t * 0.19));
+            let ay = h * (0.46 + 0.19 * Math.sin(t * 0.31 + 1.7));
+
+            // Flock centroid + polarization (how aligned the flock flies)
+            let cxSum = 0, cySum = 0, uxSum = 0, uySum = 0;
+            for (let i = 0; i < N; i++) {
+                cxSum += bx[i]; cySum += by[i];
+                const sp = Math.hypot(bvx[i], bvy[i]) || 1;
+                uxSum += bvx[i] / sp; uySum += bvy[i] / sp;
+            }
+            const cX = cxSum / N, cY = cySum / N;
+            const polarization = Math.hypot(uxSum, uySum) / N;
+
+            // ── Eye lifecycle ──
+            eyeCooldown -= dt;
+            if (eyeTimer <= 0) {
+                eyeCharge = clamp(eyeCharge + (polarization > 0.58
+                    ? dt * (0.6 + bass) : -dt * 0.4), 0, 1);
+                if (eyeCharge > 0.65 && audio.beatDetected && eyeCooldown <= 0) {
+                    eyeTimer = 3.2;
+                    eyeCooldown = 12;
+                    eyeCharge = 0;
+                    eyeX = cX; eyeY = cY;
+                }
+                eyeOpen = Math.max(0, eyeOpen - dt * 3);
+            } else {
+                eyeTimer -= dt;
+                const closing = Math.min(1, eyeTimer / 0.45);
+                eyeOpen = Math.min(Math.min(1, eyeOpen + dt * 3.5), closing);
+                ax = eyeX; ay = eyeY;
+            }
+
+            // ── Rebuild spatial grid ──
+            cellHead.fill(-1);
+            for (let i = 0; i < N; i++) {
+                const gx = clamp((bx[i] / CELL) | 0, 0, gridW - 1);
+                const gy = clamp((by[i] / CELL) | 0, 0, gridH - 1);
+                const c = gy * gridW + gx;
+                cellNext[i] = cellHead[c];
+                cellHead[c] = i;
+            }
+
+            const kAli = 2.4 + mid * 7;
+            const kCoh = 0.9 + bass * 3.4;
+            const maxSpeed = 190 + energy * 260;
+            const margin = 70;
+            // Only heavy hits scatter the flock, and only part of it
+            const scatter = audio.beatDetected && bass > 0.32;
+            const scatterKick = (bass - 0.32) * 560;
+
+            for (let i = 0; i < N; i++) {
+                const x = bx[i], y = by[i];
+                let sepX = 0, sepY = 0, aliX = 0, aliY = 0, cohX = 0, cohY = 0, nn = 0;
+
+                const gx = clamp((x / CELL) | 0, 0, gridW - 1);
+                const gy = clamp((y / CELL) | 0, 0, gridH - 1);
+                outer:
+                for (let oy = -1; oy <= 1; oy++) {
+                    const yy = gy + oy;
+                    if (yy < 0 || yy >= gridH) continue;
+                    for (let ox = -1; ox <= 1; ox++) {
+                        const xx = gx + ox;
+                        if (xx < 0 || xx >= gridW) continue;
+                        for (let j = cellHead[yy * gridW + xx]; j !== -1; j = cellNext[j]) {
+                            if (j === i) continue;
+                            const dx = bx[j] - x, dy = by[j] - y;
+                            const d2 = dx * dx + dy * dy;
+                            if (d2 > 2116) continue;          // 46px perception
+                            const d = Math.sqrt(d2) || 0.01;
+                            if (d < 20) { sepX -= dx / d * (1 - d / 20); sepY -= dy / d * (1 - d / 20); }
+                            aliX += bvx[j]; aliY += bvy[j];
+                            cohX += dx; cohY += dy;
+                            if (++nn >= 14) break outer;
+                        }
+                    }
+                }
+
+                let fx = sepX * 1300, fy = sepY * 1300;
+                if (nn > 0) {
+                    fx += (aliX / nn - bvx[i]) * kAli + (cohX / nn) * kCoh;
+                    fy += (aliY / nn - bvy[i]) * kAli + (cohY / nn) * kCoh;
+                }
+
+                // Steer toward attractor / eye ("arrive": converges, never orbits)
+                let dax = ax - x, day = ay - y;
+                const dad = Math.hypot(dax, day) || 1;
+                const cruise = 150 + energy * 210;
+                const kArr = eyeOpen > 0.1 ? 2.4 : 1.0;
+                fx += (dax / dad * cruise - bvx[i]) * kArr;
+                fy += (day / dad * cruise - bvy[i]) * kArr;
+                // Orbit the open eye instead of piling onto it
+                if (eyeOpen > 0.1 && dad < 340) {
+                    fx += (-day / dad) * 220 * eyeOpen;
+                    fy += (dax / dad) * 220 * eyeOpen;
+                    if (dad < 130) { fx -= dax / dad * 500; fy -= day / dad * 500; }
+                }
+
+                // Edge steer
+                if (x < margin) fx += (1 - x / margin) * 900;
+                if (x > w - margin) fx -= (1 - (w - x) / margin) * 900;
+                if (y < margin) fy += (1 - y / margin) * 900;
+                if (y > h - margin) fy -= (1 - (h - y) / margin) * 900;
+
+                // Treble nerves + beat burst away from the centroid
+                if (treble > 0.05) {
+                    fx += (Math.random() - 0.5) * treble * 1100;
+                    fy += (Math.random() - 0.5) * treble * 1100;
+                }
+                if (scatter && eyeOpen < 0.1 && Math.random() < 0.35) {
+                    const ddx = x - cX, ddy = y - cY;
+                    const dd = Math.hypot(ddx, ddy) || 1;
+                    bvx[i] += ddx / dd * scatterKick; bvy[i] += ddy / dd * scatterKick;
+                }
+
+                bvx[i] += fx * dt; bvy[i] += fy * dt;
+                const sp = Math.hypot(bvx[i], bvy[i]) || 1;
+                const cap = sp > maxSpeed ? maxSpeed / sp : (sp < 50 ? 50 / sp : 1);
+                bvx[i] *= cap; bvy[i] *= cap;
+
+                const px = x, py = y;
+                bx[i] = x + bvx[i] * dt; by[i] = y + bvy[i] * dt;
+
+                // Draw: speed-colored ribbon + bright head
+                const sfrac = clamp((sp - 50) / (maxSpeed - 50), 0, 1);
+                let cr, cg, cb;
+                if (isGold[i]) { cr = 255; cg = 205 + sfrac * 30; cb = 100; }
+                else {
+                    cr = 120 + sfrac * -20 + beat * 60;
+                    cg = 90 + sfrac * 135;
+                    cb = 235 + sfrac * 20;
+                }
+                tc.strokeStyle = rgba(cr, cg, cb, 0.9);
+                tc.lineWidth = isGold[i] ? 2.2 : 1.6;
+                tc.beginPath();
+                tc.moveTo(px, py);
+                tc.lineTo(bx[i], by[i]);
+                tc.stroke();
+                tc.fillStyle = rgba(Math.min(255, cr + 70), Math.min(255, cg + 70), Math.min(255, cb + 70), 0.9);
+                tc.fillRect(bx[i] - 1, by[i] - 1, 2, 2);
+            }
+
+            // ── The eye ──
+            if (eyeOpen > 0.02) {
+                const ew = Math.min(w, h) * 0.21 * (1 + bass * 0.12);
+                const eh = ew * 0.62 * eyeOpen;
+                const irisR = eh * 0.82;
+
+                // Dark hollow behind it
+                const back = tc.createRadialGradient(eyeX, eyeY, 0, eyeX, eyeY, ew * 1.5);
+                back.addColorStop(0, rgba(4, 3, 8, 0.85 * eyeOpen));
+                back.addColorStop(1, rgba(4, 3, 8, 0));
+                tc.fillStyle = back;
+                tc.fillRect(eyeX - ew * 1.5, eyeY - ew * 1.5, ew * 3, ew * 3);
+
+                // Almond lids as clip
+                tc.save();
+                tc.beginPath();
+                tc.moveTo(eyeX - ew, eyeY);
+                tc.quadraticCurveTo(eyeX, eyeY - eh * 1.7, eyeX + ew, eyeY);
+                tc.quadraticCurveTo(eyeX, eyeY + eh * 1.7, eyeX - ew, eyeY);
+                tc.closePath();
+                tc.clip();
+
+                // Iris
+                const iris = tc.createRadialGradient(eyeX, eyeY, 0, eyeX, eyeY, irisR);
+                iris.addColorStop(0, rgb(8, 6, 12));
+                iris.addColorStop(0.28 + audio.sub * 0.2, rgb(10, 8, 14));
+                iris.addColorStop(0.45, rgb(180, 120, 40));
+                iris.addColorStop(0.75, rgb(255, 200, 90));
+                iris.addColorStop(1, rgb(90, 60, 150));
+                tc.fillStyle = iris;
+                tc.beginPath();
+                tc.arc(eyeX, eyeY, irisR, 0, Math.PI * 2);
+                tc.fill();
+
+                // Radial striations
+                tc.strokeStyle = rgba(255, 220, 140, 0.25 * eyeOpen);
+                tc.lineWidth = 1;
+                for (let s = 0; s < 24; s++) {
+                    const a = (s / 24) * Math.PI * 2 + t * 0.1;
+                    tc.beginPath();
+                    tc.moveTo(eyeX + Math.cos(a) * irisR * 0.4, eyeY + Math.sin(a) * irisR * 0.4);
+                    tc.lineTo(eyeX + Math.cos(a) * irisR * 0.95, eyeY + Math.sin(a) * irisR * 0.95);
+                    tc.stroke();
+                }
+
+                // Glint
+                tc.fillStyle = rgba(255, 255, 240, 0.8 * eyeOpen);
+                tc.beginPath();
+                tc.arc(eyeX - irisR * 0.28, eyeY - irisR * 0.3, irisR * 0.09, 0, Math.PI * 2);
+                tc.fill();
+                tc.restore();
+
+                // Lid edges
+                tc.strokeStyle = rgba(220, 200, 255, 0.7 * eyeOpen);
+                tc.lineWidth = 1.5;
+                tc.beginPath();
+                tc.moveTo(eyeX - ew, eyeY);
+                tc.quadraticCurveTo(eyeX, eyeY - eh * 1.7, eyeX + ew, eyeY);
+                tc.quadraticCurveTo(eyeX, eyeY + eh * 1.7, eyeX - ew, eyeY);
+                tc.closePath();
+                tc.stroke();
+            }
+
+            ctx.drawImage(trail, 0, 0);
+        }
+    };
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// PRESET 12: VORTEX
+// ═════════════════════════════════════════════════════════════════
+// The namesake. Two reciprocal logarithmic spirals — one gold, one
+// cyan, opposite chirality, counter-rotating — carry the 64 bands
+// from sub-bass at the rim to treble at the core. Particles ride
+// the arms down into a single point of light that rings on beats.
+function createVortex() {
+    const THETA_MAX = Math.PI * 5;   // 2.5 turns per arm
+    const STEPS = 200;
+    const NP = 240;                  // infall particles
+    const pTheta = new Float32Array(NP);
+    const pChir = new Uint8Array(NP);
+    const pArm = new Uint8Array(NP);
+    for (let i = 0; i < NP; i++) {
+        pTheta[i] = Math.random() * THETA_MAX;
+        pChir[i] = Math.random() < 0.5 ? 0 : 1;
+        pArm[i] = Math.random() < 0.5 ? 0 : 1;
+    }
+    const rings = [];                // beat pulses expanding outward
+    let rot = 0;
+    let trail, tc;
+
+    // Band amplitude along the arm: treble at the core, sub at the rim
+    function armAmp(spectrum, frac) {
+        const fi = (1 - frac) * 63;
+        const i0 = fi | 0, i1 = Math.min(63, i0 + 1);
+        const ft = fi - i0;
+        return spectrum[i0] * (1 - ft) + spectrum[i1] * ft;
+    }
+
+    return {
+        name: 'Vortex',
+        render(ctx, audio, dt, w, h) {
+            if (!trail || trail.width !== w || trail.height !== h) {
+                ({ canvas: trail, ctx: tc } = makeTrail(w, h));
+            }
+            const energy = audio.energy, bass = audio.bass, beat = audio.beatPulse;
+            const da = 1 - Math.pow(1 - (65 + energy * 20) / 255, dt * 30);
+            tc.fillStyle = rgba(...BG, da);
+            tc.fillRect(0, 0, w, h);
+
+            const cx = w / 2, cy = h / 2;
+            const rOut = Math.min(w, h) * 0.46;
+            const rCore = 9;
+            const k = Math.log(rOut / rCore) / THETA_MAX;
+            rot += dt * (0.12 + energy * 0.7 + beat * 0.3);
+
+            // ── Infall particles — the spectrum drains into the 1 ──
+            const infall = dt * (0.45 + bass * 2.4 + beat * 1.1);
+            for (let i = 0; i < NP; i++) {
+                pTheta[i] -= infall * (0.6 + 0.9 * (1 - pTheta[i] / THETA_MAX));
+                if (pTheta[i] < 0.04) {
+                    pTheta[i] = THETA_MAX * (0.9 + Math.random() * 0.1);
+                    pChir[i] = Math.random() < 0.5 ? 0 : 1;
+                    pArm[i] = Math.random() < 0.5 ? 0 : 1;
+                    continue;
+                }
+                const th = pTheta[i];
+                const sgn = pChir[i] === 0 ? 1 : -1;
+                const phase = sgn * rot * (pChir[i] === 0 ? 1 : 0.82);
+                const frac = th / THETA_MAX;
+                const amp = armAmp(audio.spectrum, frac);
+                const r = rCore * Math.exp(k * th) * (1 + amp * 0.18);
+                const a = sgn * th + phase + pArm[i] * Math.PI;
+                const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
+                const [cr, cg, cb] = SPECTRUM_COLORS[Math.min(63, ((1 - frac) * 63) | 0)];
+                const bright = 0.6 + amp * 0.4;
+                tc.fillStyle = rgba(cr * bright + 80, cg * bright + 80, cb * bright + 80, 0.95);
+                const sz = 2.2 + amp * 2 + (1 - frac) * 1.6;
+                tc.fillRect(x - sz / 2, y - sz / 2, sz, sz);
+            }
+
+            // ── Beat rings — the pulse of the core travels outward ──
+            if (audio.beatDetected) rings.push({ r: rCore + 4, a: 0.55 });
+            for (let i = rings.length - 1; i >= 0; i--) {
+                const ring = rings[i];
+                ring.r += (240 + bass * 420) * dt;
+                ring.a -= dt * 0.55;
+                if (ring.a <= 0 || ring.r > rOut * 1.2) { rings.splice(i, 1); continue; }
+                tc.strokeStyle = rgba(255, 235, 190, ring.a);
+                tc.lineWidth = 1.5;
+                tc.beginPath();
+                tc.arc(cx, cy, ring.r, 0, Math.PI * 2);
+                tc.stroke();
+            }
+
+            ctx.drawImage(trail, 0, 0);
+
+            // ── Arms — drawn crisp every frame: 2 chiralities × 2 arms ──
+            for (let chir = 0; chir < 2; chir++) {
+                const sgn = chir === 0 ? 1 : -1;
+                const phase = sgn * rot * (chir === 0 ? 1 : 0.82);
+                for (let arm = 0; arm < 2; arm++) {
+                    const off = arm * Math.PI;
+
+                    // Wide soft under-stroke for glow
+                    ctx.strokeStyle = chir === 0
+                        ? rgba(255, 170, 60, 0.15 + energy * 0.10 + beat * 0.06)
+                        : rgba(80, 140, 255, 0.15 + energy * 0.10 + beat * 0.06);
+                    ctx.lineWidth = 5;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    for (let s = 2; s <= STEPS - 6; s += 2) {
+                        const th = (s / STEPS) * THETA_MAX;
+                        const amp = armAmp(audio.spectrum, th / THETA_MAX);
+                        const r = rCore * Math.exp(k * th) * (1 + amp * 0.18);
+                        const a = sgn * th + phase + off;
+                        const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
+                        s === 2 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+                    }
+                    ctx.stroke();
+
+                    // Bright pass — segmented, amplitude-lit, tapered tips
+                    for (let s = 0; s < STEPS; s += 4) {
+                        const th0 = (s / STEPS) * THETA_MAX;
+                        const th1 = ((s + 4) / STEPS) * THETA_MAX;
+                        const frac = th0 / THETA_MAX;
+                        const amp = armAmp(audio.spectrum, frac);
+                        const taper = frac > 0.9 ? (1 - frac) / 0.1 : 1;
+                        const lum = (0.42 + amp * 0.58) * taper;
+                        const r0 = rCore * Math.exp(k * th0) * (1 + amp * 0.18);
+                        const r1 = rCore * Math.exp(k * th1) * (1 + armAmp(audio.spectrum, th1 / THETA_MAX) * 0.18);
+                        const a0 = sgn * th0 + phase + off, a1 = sgn * th1 + phase + off;
+                        ctx.strokeStyle = chir === 0
+                            ? rgba(255 * lum, (185 + beat * 50) * lum, 90 * lum, 0.9)
+                            : rgba(110 * lum, (190 + beat * 45) * lum, 255 * lum, 0.9);
+                        ctx.lineWidth = 1.3 + amp * 1.8;
+                        ctx.beginPath();
+                        ctx.moveTo(cx + Math.cos(a0) * r0, cy + Math.sin(a0) * r0);
+                        ctx.lineTo(cx + Math.cos(a1) * r1, cy + Math.sin(a1) * r1);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // ── The core — one point of light, drawn crisp each frame ──
+            const coreR = 7 + energy * 24 + beat * 26;
+            const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR * 2.4);
+            core.addColorStop(0, rgba(255, 255, 245, 0.95));
+            core.addColorStop(0.25, rgba(255, 225, 150, 0.55 + beat * 0.3));
+            core.addColorStop(0.6, rgba(180, 140, 255, 0.18));
+            core.addColorStop(1, rgba(180, 140, 255, 0));
+            ctx.fillStyle = core;
+            ctx.beginPath();
+            ctx.arc(cx, cy, coreR * 2.4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    };
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+// PRESET 13: CYMATICS
+// ═════════════════════════════════════════════════════════════════
+// A Chladni plate. Thousands of sand grains migrate to the nodal
+// lines of a standing wave whose mode numbers follow the music —
+// bass picks the coarse pattern, treble the fine one. Beats strike
+// the plate and shatter the figure; quiet lets it crystallize.
+function createCymatics() {
+    const N = 3200;
+    const gu = new Float32Array(N), gv = new Float32Array(N);
+    let seeded = false;
+    let M = 2.4, Nm = 4.6;           // smoothed mode numbers
+    let strike = 0;
+
+    // Precomputed grain colors: settled = warm sand, moving = cool dust
+    const WARM = [], COOL = [];
+    for (let i = 0; i < 10; i++) {
+        const s = i / 9;
+        WARM.push(rgba(255, 208 + s * 30, 130 + s * 50, 0.35 + s * 0.55));
+        COOL.push(rgba(120, 140, 185, 0.16 + s * 0.2));
+    }
+
+    return {
+        name: 'Cymatics',
+        render(ctx, audio, dt, w, h) {
+            if (!seeded) {
+                for (let i = 0; i < N; i++) {
+                    gu[i] = Math.random() * 2 - 1;
+                    gv[i] = Math.random() * 2 - 1;
+                }
+                seeded = true;
+            }
+            ctx.fillStyle = rgb(...BG);
+            ctx.fillRect(0, 0, w, h);
+
+            const bass = audio.bass, treble = audio.treble, energy = audio.energy;
+            const spec = audio.spectrum;
+
+            // Mode targets from spectral centroids (bass half → M, treble half → N)
+            let loSum = 0, loW = 0, hiSum = 0, hiW = 0;
+            for (let i = 0; i < 30; i++) { loSum += spec[i] * i; loW += spec[i]; }
+            for (let i = 30; i < 64; i++) { hiSum += spec[i] * (i - 30); hiW += spec[i]; }
+            if (loW > 0.15) {
+                const mT = 1.3 + (loSum / loW / 29) * 4.2;
+                M += (mT - M) * Math.min(1, dt * 1.6);
+            }
+            if (hiW > 0.15) {
+                const nT = 2.2 + (hiSum / hiW / 33) * 5.6;
+                Nm += (nT - Nm) * Math.min(1, dt * 1.6);
+            }
+
+            // Beat = mallet strike; only heavy hits truly shatter the figure
+            if (audio.beatDetected) strike = Math.min(1, strike + 0.1 + Math.max(0, bass - 0.3) * 1.3);
+            strike *= Math.pow(0.14, dt);
+
+            const side = Math.min(w, h) * 0.84;
+            const half = side / 2;
+            const cx = w / 2, cy = h / 2;
+
+            // Plate chrome
+            ctx.strokeStyle = rgba(150, 160, 190, 0.16);
+            ctx.lineWidth = 1;
+            ctx.strokeRect(cx - half, cy - half, side, side);
+            const tick = 7;
+            ctx.strokeStyle = rgba(150, 160, 190, 0.35);
+            for (const [tx, ty] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+                ctx.beginPath();
+                ctx.moveTo(cx + tx * half, cy + ty * half - ty * tick);
+                ctx.lineTo(cx + tx * half, cy + ty * half);
+                ctx.lineTo(cx + tx * half - tx * tick, cy + ty * half);
+                ctx.stroke();
+            }
+
+            const Mpi = M * Math.PI, Npi = Nm * Math.PI;
+            const jit = 0.0035 + treble * 0.010 + energy * 0.005 + strike * 0.05;
+            const G = 2.4 * dt;
+            const MAXSTEP = 0.035;
+
+            let lvl;
+            for (let i = 0; i < N; i++) {
+                const u = gu[i], v = gv[i];
+                const cMu = Math.cos(Mpi * u), sMu = Math.sin(Mpi * u);
+                const cNu = Math.cos(Npi * u), sNu = Math.sin(Npi * u);
+                const cMv = Math.cos(Mpi * v), sMv = Math.sin(Mpi * v);
+                const cNv = Math.cos(Npi * v), sNv = Math.sin(Npi * v);
+
+                // Chladni figure φ and its gradient
+                const f = cMu * cNv - cNu * cMv;
+                const dfdu = -Mpi * sMu * cNv + Npi * sNu * cMv;
+                const dfdv = -Npi * cMu * sNv + Mpi * cNu * sMv;
+
+                // Drift toward nodal lines (φ = 0) + thermal shake
+                let du = -f * dfdu * G + (Math.random() - 0.5) * jit;
+                let dv = -f * dfdv * G + (Math.random() - 0.5) * jit;
+                if (du > MAXSTEP) du = MAXSTEP; else if (du < -MAXSTEP) du = -MAXSTEP;
+                if (dv > MAXSTEP) dv = MAXSTEP; else if (dv < -MAXSTEP) dv = -MAXSTEP;
+
+                let nu = u + du, nv = v + dv;
+                if (nu > 1) nu = 2 - nu; else if (nu < -1) nu = -2 - nu;
+                if (nv > 1) nv = 2 - nv; else if (nv < -1) nv = -2 - nv;
+                gu[i] = nu; gv[i] = nv;
+
+                // Settled grains glow warm; airborne grains cool and dim
+                const sett = 1 - Math.min(1, Math.abs(f) * 1.5);
+                lvl = (sett * 9.99) | 0;
+                ctx.fillStyle = sett > 0.55 ? WARM[lvl] : COOL[lvl];
+                const px = cx + nu * half, py = cy + nv * half;
+                const sz = sett > 0.55 ? 2 : 1.5;
+                ctx.fillRect(px - sz / 2, py - sz / 2, sz, sz);
+            }
+
+            // Driver at plate center, breathing with sub-bass
+            const drvR = 16 + audio.sub * 46 + strike * 30;
+            const drv = ctx.createRadialGradient(cx, cy, 0, cx, cy, drvR);
+            drv.addColorStop(0, rgba(255, 214, 140, 0.10 + audio.sub * 0.22 + strike * 0.15));
+            drv.addColorStop(1, rgba(255, 214, 140, 0));
+            ctx.fillStyle = drv;
+            ctx.beginPath();
+            ctx.arc(cx, cy, drvR, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Mode readout, scope-style
+            ctx.font = '11px "Courier New", monospace';
+            ctx.fillStyle = rgba(150, 160, 190, 0.5);
+            ctx.textAlign = 'left';
+            ctx.fillText(`m ${M.toFixed(1)} · n ${Nm.toFixed(1)}`, cx - half + 2, cy - half - 8);
+        }
+    };
+}
+
+
 function createSupportScreen() {
     let hoverBtn = false;
     const BMC_URL = 'https://buymeacoffee.com/joeyv23';
@@ -1715,6 +2266,9 @@ class App {
             createSacredGeometry(),
             createStarfield(),
             createAurora(),
+            createMurmuration(),
+            createVortex(),
+            createCymatics(),
             createSupportScreen()
         ];
         this.currentPreset = 0;

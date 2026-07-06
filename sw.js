@@ -1,5 +1,5 @@
 // Vortex Service Worker — offline caching
-const CACHE_NAME = 'vortex-v6';
+const CACHE_NAME = 'vortex-v7';
 const ASSETS = [
   '/',
   '/index.html',
