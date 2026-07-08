@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Cymatics Lab — Vortex</title>
+<style>
+  :root { --bg:#08080c; --panel:#101018; --line:#96a0be; --sand:#ffd08c; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:#c9cede;
+    font-family:"Courier New",ui-monospace,monospace; overflow:hidden; -webkit-user-select:none; user-select:none; }
+  #stage { position:absolute; inset:0 0 132px 0; display:flex; align-items:center; justify-content:center; }
+  canvas { display:block; }
+  #panel { position:absolute; left:0; right:0; bottom:0; height:132px; padding:12px 18px 14px;
+    background:linear-gradient(0deg,rgba(16,16,24,.96),rgba(16,16,24,.82)); border-top:1px solid rgba(150,160,190,.16);
+    display:flex; flex-direction:column; gap:9px; }
+  .row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .readout { font-size:15px; letter-spacing:.5px; }
+  .readout b { color:var(--sand); font-size:17px; }
+  .tag { font-size:11px; padding:2px 7px; border-radius:10px; border:1px solid rgba(150,160,190,.4); color:#96a0be; }
+  .tag.on { color:#08080c; background:var(--sand); border-color:var(--sand); }
+  .grow { flex:1 1 260px; display:flex; align-items:center; gap:9px; font-size:12px; color:#8b93ab; }
+  input[type=range] { -webkit-appearance:none; appearance:none; height:4px; border-radius:3px;
+    background:rgba(150,160,190,.28); outline:none; flex:1; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:15px; height:15px; border-radius:50%;
+    background:var(--sand); cursor:pointer; box-shadow:0 0 8px rgba(255,208,140,.6); }
+  input[type=range]::-moz-range-thumb { width:15px; height:15px; border:none; border-radius:50%; background:var(--sand); cursor:pointer; }
+  #figSlider { flex:1 1 100%; }
+  button { font-family:inherit; font-size:12px; color:#c9cede; background:rgba(150,160,190,.1);
+    border:1px solid rgba(150,160,190,.32); border-radius:6px; padding:5px 12px; cursor:pointer; }
+  button.on { color:#08080c; background:var(--sand); border-color:var(--sand); }
+  button:hover { border-color:rgba(255,208,140,.6); }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { font-size:11px; padding:3px 8px; border-radius:6px; cursor:pointer; color:#8b93ab;
+    border:1px solid rgba(150,160,190,.28); background:transparent; }
+  .chip.cur { color:#08080c; background:var(--sand); border-color:var(--sand); }
+  .hint { position:absolute; top:14px; left:50%; transform:translateX(-50%); font-size:12px; color:#5a6076;
+    letter-spacing:.5px; pointer-events:none; }
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="plate"></canvas></div>
+  <div class="hint">CYMATICS LAB · single-mode Chladni plate · drag to tune through the clean figures</div>
+  <div id="panel">
+    <input type="range" id="figSlider" min="0" max="0" step="1" value="0">
+    <div class="row">
+      <div class="readout">mode <b id="rMode">—</b> &nbsp;·&nbsp; <span id="rFreq" style="color:#8b93ab">f≈—</span></div>
+      <span class="tag" id="rLadder">—</span>
+      <button id="autoBtn">▶ Auto-sweep</button>
+      <div class="chips" id="chips"></div>
+    </div>
+    <div class="row">
+      <label class="grow">sweep <input type="range" id="speed" min="0.2" max="3" step="0.1" value="1"></label>
+      <label class="grow">grains <input type="range" id="grains" min="1200" max="6000" step="200" value="3600"></label>
+      <label class="grow">crispness <input type="range" id="crisp" min="1.0" max="2.6" step="0.05" value="1.5"></label>
+    </div>
+  </div>
+
+<script>
+"use strict";
+// Clean, iconic square-plate Chladni figures (m≠n), ordered by √(m²+n²).
+// The 8 marked ★ are the ones currently wired into the Vortex "Cymatics" preset.
+const LADDER = new Set(["1,2","2,3","3,4","4,5","3,6","5,6","4,7","6,7"]);
+const RAW = [[1,2],[1,3],[2,3],[1,4],[2,4],[3,4],[1,5],[2,5],[3,5],[4,5],
+             [2,6],[3,6],[4,6],[5,6],[3,7],[4,7],[5,7],[6,7],[5,8],[7,8]];
+const CATALOG = RAW.map(([m,n]) => ({ m, n, f: Math.sqrt(m*m+n*n), key:`${m},${n}` }))
+                   .sort((a,b) => a.f - b.f);
+const K = CATALOG.length;
+
+const cv = document.getElementById('plate'), ctx = cv.getContext('2d');
+const MAXN = 6000;
+const gu = new Float32Array(MAXN), gv = new Float32Array(MAXN);
+for (let i=0;i<MAXN;i++){ gu[i]=Math.random()*2-1; gv[i]=Math.random()*2-1; }
+
+// warm sand / cool dust palette
+const WARM=[], COOL=[];
+for (let i=0;i<10;i++){ const s=i/9;
+  WARM.push(`rgba(255,${(208+s*30)|0},${(130+s*50)|0},${(0.35+s*0.55).toFixed(3)})`);
+  COOL.push(`rgba(120,140,185,${(0.16+s*0.2).toFixed(3)})`); }
+
+let N = 3600, cat = CATALOG.findIndex(c=>c.key==="3,4"); if (cat<0) cat=0;
+let scramble = 0, settleMul = 1.5, auto = false, sweepSpeed = 1, autoT = 0, dir = 1;
+let last = 0, tGlobal = 0;
+
+const $ = id => document.getElementById(id);
+const figSlider = $('figSlider'); figSlider.max = K-1; figSlider.value = cat;
+
+function setFigure(i, viaUser){
+  i = Math.max(0, Math.min(K-1, i|0));
+  if (i === cat) return;
+  scramble = Math.min(1, 0.4 + 0.3*Math.abs(i-cat));
+  cat = i; figSlider.value = cat; autoT = 0;
+  updateReadout();
+}
+function updateReadout(){
+  const c = CATALOG[cat];
+  $('rMode').textContent = `(${c.m},${c.n})`;
+  $('rFreq').textContent = `f≈${c.f.toFixed(2)}`;
+  const inL = LADDER.has(c.key);
+  const tag = $('rLadder'); tag.textContent = inL ? '★ in visualizer' : 'not in ladder';
+  tag.classList.toggle('on', inL);
+  for (const ch of chipEls) ch.classList.toggle('cur', +ch.dataset.i === cat);
+}
+
+// quick-jump chips for the 8 ladder figures
+const chipEls = [];
+{ const wrap = $('chips');
+  CATALOG.forEach((c,i)=>{ if(!LADDER.has(c.key)) return;
+    const b=document.createElement('span'); b.className='chip'; b.textContent=`${c.m},${c.n}`;
+    b.dataset.i=i; b.onclick=()=>setFigure(i,true); wrap.appendChild(b); chipEls.push(b); });
+}
+
+function resize(){
+  const s = Math.min(cv.parentElement.clientWidth, cv.parentElement.clientHeight);
+  cv.width = s; cv.height = s;
+}
+window.addEventListener('resize', resize);
+
+function render(dt){
+  const w = cv.width, h = cv.height;
+  ctx.fillStyle = '#08080c'; ctx.fillRect(0,0,w,h);
+
+  const c = CATALOG[cat];
+  const Mpi = c.m*Math.PI, Npi = c.n*Math.PI;
+  const side = Math.min(w,h)*0.9, half = side/2, cx = w/2, cy = h/2;
+
+  // plate chrome + corner ticks
+  ctx.strokeStyle = 'rgba(150,160,190,0.16)'; ctx.lineWidth = 1;
+  ctx.strokeRect(cx-half, cy-half, side, side);
+  ctx.strokeStyle = 'rgba(150,160,190,0.35)'; const tick=8;
+  for (const [tx,ty] of [[-1,-1],[1,-1],[-1,1],[1,1]]){ ctx.beginPath();
+    ctx.moveTo(cx+tx*half, cy+ty*half-ty*tick); ctx.lineTo(cx+tx*half, cy+ty*half);
+    ctx.lineTo(cx+tx*half-tx*tick, cy+ty*half); ctx.stroke(); }
+
+  const jit = 0.004 + scramble*0.12;
+  const G = 2.3*dt*(1 - 0.75*scramble), MAXSTEP = 0.035;
+  for (let i=0;i<N;i++){
+    const u=gu[i], v=gv[i];
+    const cMu=Math.cos(Mpi*u), sMu=Math.sin(Mpi*u), cNu=Math.cos(Npi*u), sNu=Math.sin(Npi*u);
+    const cMv=Math.cos(Mpi*v), sMv=Math.sin(Mpi*v), cNv=Math.cos(Npi*v), sNv=Math.sin(Npi*v);
+    const f = cMu*cNv - cNu*cMv;
+    const dfdu = -Mpi*sMu*cNv + Npi*sNu*cMv;
+    const dfdv = -Npi*cMu*sNv + Mpi*cNu*sMv;
+    let du=-f*dfdu*G + (Math.random()-0.5)*jit, dv=-f*dfdv*G + (Math.random()-0.5)*jit;
+    if(du>MAXSTEP)du=MAXSTEP; else if(du<-MAXSTEP)du=-MAXSTEP;
+    if(dv>MAXSTEP)dv=MAXSTEP; else if(dv<-MAXSTEP)dv=-MAXSTEP;
+    let nu=u+du, nv=v+dv;
+    if(nu>1)nu=2-nu; else if(nu<-1)nu=-2-nu; if(nv>1)nv=2-nv; else if(nv<-1)nv=-2-nv;
+    gu[i]=nu; gv[i]=nv;
+    const sett = 1 - Math.min(1, Math.abs(f)*settleMul);
+    const lvl = (sett*9.99)|0;
+    ctx.fillStyle = sett>0.55 ? WARM[lvl] : COOL[lvl];
+    const sz = sett>0.55 ? 2 : 1.5;
+    ctx.fillRect(cx+nu*half - sz/2, cy+nv*half - sz/2, sz, sz);
+  }
+
+  // gentle driver glow, breathing + a flash on each switch
+  const drvR = 16 + (0.5+0.5*Math.sin(tGlobal*1.4))*10 + scramble*26;
+  const g = ctx.createRadialGradient(cx,cy,0,cx,cy,drvR);
+  g.addColorStop(0, `rgba(255,214,140,${(0.08+scramble*0.14).toFixed(3)})`);
+  g.addColorStop(1, 'rgba(255,214,140,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx,cy,drvR,0,Math.PI*2); ctx.fill();
+}
+
+function loop(now){
+  const dt = Math.min(0.05, last ? (now-last)/1000 : 0.016); last = now; tGlobal += dt;
+  if (auto){ autoT += dt*sweepSpeed;
+    if (autoT > 2.4){ let nx = cat + dir; if (nx>=K){ nx=K-2; dir=-1; } else if (nx<0){ nx=1; dir=1; } setFigure(nx); } }
+  scramble *= Math.pow(0.04, dt);
+  render(dt);
+  requestAnimationFrame(loop);
+}
+
+// wiring
+figSlider.addEventListener('input', e => setFigure(+e.target.value, true));
+$('autoBtn').addEventListener('click', e => { auto=!auto; e.target.classList.toggle('on',auto);
+  e.target.textContent = auto ? '⏸ Auto-sweep' : '▶ Auto-sweep'; });
+$('speed').addEventListener('input', e => sweepSpeed = +e.target.value);
+$('grains').addEventListener('input', e => N = +e.target.value);
+$('crisp').addEventListener('input', e => settleMul = +e.target.value);
+
+resize(); updateReadout(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>

@@ -1859,13 +1859,32 @@ function createVortex() {
 // bass picks the coarse pattern, treble the fine one. Beats strike
 // the plate and shatter the figure; quiet lets it crystallize.
 function createCymatics() {
-    const N = 3200;
+    const N = 3600;
     const gu = new Float32Array(N), gv = new Float32Array(N);
     let seeded = false;
-    let M = 2.4, Nm = 4.6;           // smoothed mode numbers
-    let strike = 0;
 
-    // Precomputed grain colors: settled = warm sand, moving = cool dust
+    // Every clean, iconic square-plate Chladni figure the plate can ring,
+    // ordered simple → intricate (√(m²+n²) ascending). Each figure is a
+    // single mode, so it stays crisp; the plate sweeps through the whole
+    // set on a timer, morphing smoothly from one figure into the next.
+    const LADDER = [
+        { m: 1, n: 2 }, { m: 1, n: 3 }, { m: 2, n: 3 }, { m: 1, n: 4 },
+        { m: 2, n: 4 }, { m: 3, n: 4 }, { m: 1, n: 5 }, { m: 2, n: 5 },
+        { m: 3, n: 5 }, { m: 2, n: 6 }, { m: 4, n: 5 }, { m: 3, n: 6 },
+        { m: 4, n: 6 }, { m: 3, n: 7 }, { m: 5, n: 6 }, { m: 4, n: 7 },
+        { m: 5, n: 7 }, { m: 6, n: 7 }, { m: 5, n: 8 }, { m: 7, n: 8 },
+    ];
+    const K = LADDER.length;
+    const SWITCH_EVERY = 10;             // seconds on each figure before it shifts
+    const MORPH_TIME = 2.0;              // seconds to tween from one figure into the next
+
+    let rungFrom = 0, rungTo = 0;        // figure we're morphing from / to
+    let dir = 1;                         // sweep direction (bounces at the ends)
+    let sweepT = 0;                      // seconds elapsed on the current figure
+    let morph = 1;                       // 0 = just switched, 1 = fully settled on rungTo
+    let strike = 0;                      // beat mallet
+
+    // Settled grains glow warm sand; airborne grains stay cool dust
     const WARM = [], COOL = [];
     for (let i = 0; i < 10; i++) {
         const s = i / 9;
@@ -1887,22 +1906,32 @@ function createCymatics() {
             ctx.fillRect(0, 0, w, h);
 
             const bass = audio.bass, treble = audio.treble, energy = audio.energy;
-            const spec = audio.spectrum;
 
-            // Mode targets from spectral centroids (bass half → M, treble half → N)
-            let loSum = 0, loW = 0, hiSum = 0, hiW = 0;
-            for (let i = 0; i < 30; i++) { loSum += spec[i] * i; loW += spec[i]; }
-            for (let i = 30; i < 64; i++) { hiSum += spec[i] * (i - 30); hiW += spec[i]; }
-            if (loW > 0.15) {
-                const mT = 1.3 + (loSum / loW / 29) * 4.2;
-                M += (mT - M) * Math.min(1, dt * 1.6);
+            // ── Which figure? Sweep the whole ladder on a slow timer — a new
+            //    clean figure every SWITCH_EVERY seconds, bouncing at the ends.
+            //    We count playing time, so it holds while the music is paused.
+            if (energy > 0.02) sweepT += dt;
+            if (sweepT >= SWITCH_EVERY && K > 1) {
+                sweepT = 0;
+                let nx = rungTo + dir;
+                if (nx >= K) { nx = K - 2; dir = -1; }
+                else if (nx < 0) { nx = 1; dir = 1; }
+                rungFrom = rungTo;
+                rungTo = nx;
+                morph = 0;                                    // begin the tween into the new figure
             }
-            if (hiW > 0.15) {
-                const nT = 2.2 + (hiSum / hiW / 33) * 5.6;
-                Nm += (nT - Nm) * Math.min(1, dt * 1.6);
-            }
+            // Ease the tween (smoothstep hurries through the busy middle) and
+            // blend the two figures' fields — the nodal lines flow from one
+            // pattern into the next, so grains glide across instead of cutting.
+            morph = Math.min(1, morph + dt / MORPH_TIME);
+            const wght = morph * morph * (3 - 2 * morph);     // 0..1 blend weight: rungFrom → rungTo
+            const morphing = wght < 0.9995;
+            const A = LADDER[rungFrom], B = LADDER[rungTo];
+            const MpiB = B.m * Math.PI, NpiB = B.n * Math.PI;
+            const MpiA = A.m * Math.PI, NpiA = A.n * Math.PI;
+            const wB = wght, wA = 1 - wght;
 
-            // Beat = mallet strike; only heavy hits truly shatter the figure
+            // Beat = mallet strike (a shimmer of energy through the sand)
             if (audio.beatDetected) strike = Math.min(1, strike + 0.1 + Math.max(0, bass - 0.3) * 1.3);
             strike *= Math.pow(0.14, dt);
 
@@ -1924,23 +1953,34 @@ function createCymatics() {
                 ctx.stroke();
             }
 
-            const Mpi = M * Math.PI, Npi = Nm * Math.PI;
             const jit = 0.0035 + treble * 0.010 + energy * 0.005 + strike * 0.05;
-            const G = 2.4 * dt;
+            const G = 2.3 * dt;
             const MAXSTEP = 0.035;
 
-            let lvl;
             for (let i = 0; i < N; i++) {
                 const u = gu[i], v = gv[i];
-                const cMu = Math.cos(Mpi * u), sMu = Math.sin(Mpi * u);
-                const cNu = Math.cos(Npi * u), sNu = Math.sin(Npi * u);
-                const cMv = Math.cos(Mpi * v), sMv = Math.sin(Mpi * v);
-                const cNv = Math.cos(Npi * v), sNv = Math.sin(Npi * v);
 
-                // Chladni figure φ and its gradient
-                const f = cMu * cNv - cNu * cMv;
-                const dfdu = -Mpi * sMu * cNv + Npi * sNu * cMv;
-                const dfdv = -Npi * cMu * sNv + Mpi * cNu * sMv;
+                // Destination figure φ_B and its gradient (always needed)
+                const cMuB = Math.cos(MpiB * u), sMuB = Math.sin(MpiB * u);
+                const cNuB = Math.cos(NpiB * u), sNuB = Math.sin(NpiB * u);
+                const cMvB = Math.cos(MpiB * v), sMvB = Math.sin(MpiB * v);
+                const cNvB = Math.cos(NpiB * v), sNvB = Math.sin(NpiB * v);
+                let f    = cMuB * cNvB - cNuB * cMvB;
+                let dfdu = -MpiB * sMuB * cNvB + NpiB * sNuB * cMvB;
+                let dfdv = -NpiB * cMuB * sNvB + MpiB * cNuB * sMvB;
+
+                // Mid-tween, blend in the figure we're leaving so the field
+                // (1−w)·φ_A + w·φ_B deforms continuously and the grains flow
+                if (morphing) {
+                    f *= wB; dfdu *= wB; dfdv *= wB;
+                    const cMuA = Math.cos(MpiA * u), sMuA = Math.sin(MpiA * u);
+                    const cNuA = Math.cos(NpiA * u), sNuA = Math.sin(NpiA * u);
+                    const cMvA = Math.cos(MpiA * v), sMvA = Math.sin(MpiA * v);
+                    const cNvA = Math.cos(NpiA * v), sNvA = Math.sin(NpiA * v);
+                    f    += wA * (cMuA * cNvA - cNuA * cMvA);
+                    dfdu += wA * (-MpiA * sMuA * cNvA + NpiA * sNuA * cMvA);
+                    dfdv += wA * (-NpiA * cMuA * sNvA + MpiA * cNuA * sMvA);
+                }
 
                 // Drift toward nodal lines (φ = 0) + thermal shake
                 let du = -f * dfdu * G + (Math.random() - 0.5) * jit;
@@ -1955,28 +1995,30 @@ function createCymatics() {
 
                 // Settled grains glow warm; airborne grains cool and dim
                 const sett = 1 - Math.min(1, Math.abs(f) * 1.5);
-                lvl = (sett * 9.99) | 0;
+                const lvl = (sett * 9.99) | 0;
                 ctx.fillStyle = sett > 0.55 ? WARM[lvl] : COOL[lvl];
                 const px = cx + nu * half, py = cy + nv * half;
                 const sz = sett > 0.55 ? 2 : 1.5;
                 ctx.fillRect(px - sz / 2, py - sz / 2, sz, sz);
             }
 
-            // Driver at plate center, breathing with sub-bass
-            const drvR = 16 + audio.sub * 46 + strike * 30;
+            // Driver at plate center — sub-bass + beat, swelling through a tween
+            const morphGlow = morphing ? Math.sin(Math.PI * morph) : 0;
+            const drvR = 16 + audio.sub * 46 + strike * 30 + morphGlow * 20;
             const drv = ctx.createRadialGradient(cx, cy, 0, cx, cy, drvR);
-            drv.addColorStop(0, rgba(255, 214, 140, 0.10 + audio.sub * 0.22 + strike * 0.15));
+            drv.addColorStop(0, rgba(255, 214, 140, 0.10 + audio.sub * 0.22 + strike * 0.15 + morphGlow * 0.10));
             drv.addColorStop(1, rgba(255, 214, 140, 0));
             ctx.fillStyle = drv;
             ctx.beginPath();
             ctx.arc(cx, cy, drvR, 0, Math.PI * 2);
             ctx.fill();
 
-            // Mode readout, scope-style
+            // Readout — names the figure, or the tween in progress
             ctx.font = '11px "Courier New", monospace';
             ctx.fillStyle = rgba(150, 160, 190, 0.5);
             ctx.textAlign = 'left';
-            ctx.fillText(`m ${M.toFixed(1)} · n ${Nm.toFixed(1)}`, cx - half + 2, cy - half - 8);
+            const label = morphing ? `mode (${A.m},${A.n}) → (${B.m},${B.n})` : `mode (${B.m},${B.n})`;
+            ctx.fillText(label, cx - half + 2, cy - half - 8);
         }
     };
 }
