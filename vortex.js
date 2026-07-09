@@ -1453,6 +1453,7 @@ function createMurmuration() {
     const cellNext = new Int32Array(N);
 
     let t = 0;                       // attractor wander clock
+    const EYE = false;               // the coherence "eye" — hidden so the flock reads alone; flip true to bring it back
     let eyeCharge = 0;               // coherence builds this toward 1
     let eyeTimer = 0;                // seconds the eye stays open
     let eyeOpen = 0;                 // eased openness 0..1
@@ -1507,7 +1508,7 @@ function createMurmuration() {
             if (eyeTimer <= 0) {
                 eyeCharge = clamp(eyeCharge + (polarization > 0.58
                     ? dt * (0.6 + bass) : -dt * 0.4), 0, 1);
-                if (eyeCharge > 0.65 && audio.beatDetected && eyeCooldown <= 0) {
+                if (EYE && eyeCharge > 0.65 && audio.beatDetected && eyeCooldown <= 0) {
                     eyeTimer = 3.2;
                     eyeCooldown = 12;
                     eyeCharge = 0;
