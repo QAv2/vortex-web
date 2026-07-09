@@ -2290,6 +2290,229 @@ class UI {
 
 
 // ═════════════════════════════════════════════════════════════════
+// PRESET 14: COSMOS — "Godfellas" galactic entity (audio-reactive)
+//   A face-on spiral of physically-coloured stars (blackbody by
+//   temperature, mostly cool dwarfs) on deep space. The bright
+//   "speaking" stars pulse with the spectrum, and every beat launches
+//   a wave of brightening that sweeps outward across the galaxy.
+// ═════════════════════════════════════════════════════════════════
+function createCosmos() {
+    const TAU = Math.PI * 2;
+    let time = 0, angle = 0, sEnergy = 0;
+
+    // speech-wave ripples (spawned on each beat, travel outward)
+    const ripples = [];
+    const RIPPLE_SPEED = 1.5, RIPPLE_MAX = 4, RIPPLE_LIFE = 1.3, RIPPLE_W = 0.15;
+
+    // ── helpers ──────────────────────────────────────────────────
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const lerpCol = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+    const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;
+
+    // blackbody temperature (K) → sRGB from Charity's table, with a mild
+    // saturation lift so O reads blue / M reads orange on screen
+    const BB = [
+        [3000, 255, 180, 107], [3500, 255, 196, 137], [4000, 255, 209, 163], [4500, 255, 219, 186],
+        [5000, 255, 228, 206], [5500, 255, 236, 224], [6600, 255, 249, 253], [7000, 245, 243, 255],
+        [8000, 227, 233, 255], [10000, 204, 219, 255], [15000, 179, 204, 255], [20000, 168, 196, 255],
+        [30000, 159, 190, 255]
+    ];
+    function bbColor(t) {
+        let c;
+        if (t <= BB[0][0]) c = [BB[0][1], BB[0][2], BB[0][3]];
+        else if (t >= BB[BB.length - 1][0]) { const l = BB[BB.length - 1]; c = [l[1], l[2], l[3]]; }
+        else {
+            for (let i = 1; i < BB.length; i++) {
+                if (t <= BB[i][0]) {
+                    const a = BB[i - 1], b = BB[i], f = (t - a[0]) / (b[0] - a[0]);
+                    c = [lerp(a[1], b[1], f), lerp(a[2], b[2], f), lerp(a[3], b[3], f)];
+                    break;
+                }
+            }
+        }
+        const lum = 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+        return [clamp(lum + (c[0] - lum) * 1.4, 0, 255), clamp(lum + (c[1] - lum) * 1.4, 0, 255), clamp(lum + (c[2] - lum) * 1.4, 0, 255)];
+    }
+    function sampleTemp() {
+        const r = Math.random();
+        if (r < 0.72) return 3000 + Math.random() * 2100;   // M / K  (majority)
+        if (r < 0.90) return 5200 + Math.random() * 1800;   // G / F
+        if (r < 0.98) return 7000 + Math.random() * 4000;   // A / late B
+        return 12000 + Math.random() * 16000;               // rare O / B
+    }
+
+    // the reactive "speaking" stars — real bright-star colours, warm→cool,
+    // index-matched to ascending spectrum band (red supergiants … blue giants)
+    const SPEAK_COL = [
+        [255, 180, 120], [255, 186, 128], [255, 201, 152], [255, 214, 176], [255, 225, 190], [255, 239, 228],
+        [255, 246, 237], [248, 247, 255], [214, 225, 255], [204, 219, 255], [201, 218, 255], [178, 203, 255],
+        [168, 196, 255], [159, 190, 255]
+    ];
+    const NSPEAK = SPEAK_COL.length;
+
+    function mkStar() {
+        const b = Math.pow(Math.random(), 2.2);
+        return {
+            size: 0.55 + b * 1.9, b, col: bbColor(sampleTemp()),
+            twPhase: Math.random() * TAU, twFreq: 0.4 + Math.random() * 1.6,
+            twAmp: 0.12 + Math.random() * 0.28
+        };
+    }
+
+    // ── build the field once ─────────────────────────────────────
+    const SWEEP = 2.5;
+    const field = [];                       // diffuse backdrop (screen-frac, static)
+    for (let i = 0; i < 500; i++) {
+        const s = mkStar(); s.fx = Math.random(); s.fy = Math.random(); field.push(s);
+    }
+    const galaxy = [];                      // spiral arms + bulge (centered, rotates)
+    for (let i = 0; i < 340; i++) {
+        const arm = i % 2, t = Math.pow(Math.random(), 0.8);
+        const r = 0.13 + t * 1.02 + (Math.random() - 0.5) * 0.13;
+        const th = arm * Math.PI + t * SWEEP + (Math.random() - 0.5) * 0.5;
+        const s = mkStar();
+        s.gx = Math.cos(th) * r; s.gy = Math.sin(th) * r; s.dist = Math.hypot(s.gx, s.gy);
+        galaxy.push(s);
+    }
+    for (let i = 0; i < 130; i++) {
+        const s = mkStar();
+        s.gx = gauss() * 0.24; s.gy = gauss() * 0.24; s.dist = Math.hypot(s.gx, s.gy);
+        s.b = Math.max(s.b, 0.3 + Math.random() * 0.4);
+        galaxy.push(s);
+    }
+    const speak = [];                       // reactive "speaking" stars
+    for (let i = 0; i < NSPEAK; i++) {
+        let gx = 0, gy = 0;
+        if (i > 0) {
+            const th = (i / NSPEAK) * TAU + (Math.random() - 0.5) * 0.6, r = 0.16 + Math.random() * 0.98;
+            gx = Math.cos(th) * r; gy = Math.sin(th) * r;
+        }
+        speak.push({
+            gx, gy, dist: Math.hypot(gx, gy),
+            band: Math.min(63, 2 + Math.round(i / (NSPEAK - 1) * 60)),
+            col: SPEAK_COL[i], baseSize: 3 + Math.random() * 2, lit: 0.2
+        });
+    }
+    const nebula = [];                      // soft gas blobs (centered, rotates)
+    //  warm-white bulge core · then Hα-red / [O III]-teal / reflection-blue arms
+    nebula.push({ gx: 0, gy: 0, rad: 0.5, core: true, col: [255, 240, 224] });
+    for (let i = 0; i < 12; i++) {
+        const arm = i % 2, t = 0.15 + i / 12, th = arm * Math.PI + t * SWEEP, r = (0.13 + t * 0.95) * 0.85;
+        const role = i % 5;
+        nebula.push({
+            gx: Math.cos(th) * r, gy: Math.sin(th) * r,
+            rad: 0.18 + Math.random() * 0.14, core: false,
+            col: role === 0 ? [255, 70, 80] : role === 3 ? [0, 205, 175] : [80, 110, 205]
+        });
+    }
+
+    // ── draw one glowing star (soft halo + diffraction spikes + hot core) ──
+    function star(ctx, x, y, col, lit, base) {
+        const R = base * (0.8 + lit * 0.8);
+        const g = ctx.createRadialGradient(x, y, 0, x, y, R * 4);
+        g.addColorStop(0, rgba(col[0], col[1], col[2], clamp(0.34 * lit + 0.06, 0, 1)));
+        g.addColorStop(1, rgba(col[0], col[1], col[2], 0));
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, R * 4, 0, TAU); ctx.fill();
+        if (lit > 0.15) {
+            const spike = R * (2 + lit * 7), sa = clamp(lit * 0.5, 0, 0.6);
+            const line = (x1, y1, x2, y2) => {
+                const lg = ctx.createLinearGradient(x1, y1, x2, y2);
+                lg.addColorStop(0, rgba(col[0], col[1], col[2], 0));
+                lg.addColorStop(0.5, rgba(255, 255, 255, sa));
+                lg.addColorStop(1, rgba(col[0], col[1], col[2], 0));
+                ctx.strokeStyle = lg; ctx.lineWidth = 1.1;
+                ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+            };
+            line(x - spike, y, x + spike, y); line(x, y - spike, x, y + spike);
+        }
+        const cc = lerpCol(col, [255, 255, 255], clamp(lit * 0.7, 0, 0.8));
+        ctx.fillStyle = rgba(cc[0], cc[1], cc[2], clamp(0.55 + lit * 0.45, 0, 1));
+        ctx.beginPath(); ctx.arc(x, y, R * 0.62, 0, TAU); ctx.fill();
+    }
+
+    return {
+        name: 'Cosmos',
+        render(ctx, audio, dt, w, h) {
+            dt = Math.min(dt, 0.05);
+            time += dt; angle += dt * 0.012;
+            sEnergy += (audio.energy - sEnergy) * (1 - Math.pow(0.6, dt * 30));
+            const energy = sEnergy, bass = audio.bass, mid = audio.mid;
+
+            if (audio.beatDetected && ripples.length < RIPPLE_MAX) ripples.push({ t: 0 });
+            for (let i = ripples.length - 1; i >= 0; i--) {
+                ripples[i].t += dt;
+                if (ripples[i].t > RIPPLE_LIFE) ripples.splice(i, 1);
+            }
+            const rippleAt = (d) => {
+                let s = 0;
+                for (const rp of ripples) {
+                    const x = d - rp.t * RIPPLE_SPEED;
+                    s += Math.exp(-(x * x) / (2 * RIPPLE_W * RIPPLE_W)) * (1 - rp.t / RIPPLE_LIFE);
+                }
+                return s;
+            };
+
+            const cx = w / 2, cy = h / 2, S = Math.min(w, h) * 0.46;
+            const ca = Math.cos(angle), sa = Math.sin(angle);
+
+            ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+            ctx.fillStyle = rgb(...BG); ctx.fillRect(0, 0, w, h);
+            ctx.globalCompositeOperation = 'lighter';
+
+            for (const b of nebula) {
+                const rx = b.gx * ca - b.gy * sa, ry = b.gx * sa + b.gy * ca;
+                const x = cx + rx * S, y = cy + ry * S;
+                const breath = b.core ? (0.85 + bass * 0.6) : (0.8 + mid * 0.4 + energy * 0.2);
+                const rad = b.rad * S * (0.9 + energy * 0.2);
+                const a = clamp((b.core ? 0.16 : 0.10) * breath, 0, 0.4);
+                const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
+                g.addColorStop(0, rgba(b.col[0], b.col[1], b.col[2], a));
+                g.addColorStop(1, rgba(b.col[0], b.col[1], b.col[2], 0));
+                ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, rad, 0, TAU); ctx.fill();
+            }
+
+            const gLift = 0.85 + energy * 0.35;
+            for (const s of field) {
+                const tw = 1 + s.twAmp * Math.sin(time * s.twFreq + s.twPhase);
+                const a = clamp(s.b * tw * gLift * 0.9, 0, 1), sz = s.size * (0.9 + 0.15 * tw);
+                ctx.fillStyle = rgba(s.col[0], s.col[1], s.col[2], a);
+                ctx.beginPath(); ctx.arc(s.fx * w, s.fy * h, sz, 0, TAU); ctx.fill();
+                if (s.b > 0.55) {
+                    ctx.fillStyle = rgba(s.col[0], s.col[1], s.col[2], a * 0.16);
+                    ctx.beginPath(); ctx.arc(s.fx * w, s.fy * h, sz * 2.4, 0, TAU); ctx.fill();
+                }
+            }
+
+            for (const s of galaxy) {
+                const rx = s.gx * ca - s.gy * sa, ry = s.gx * sa + s.gy * ca;
+                const x = cx + rx * S, y = cy + ry * S;
+                const tw = 1 + s.twAmp * Math.sin(time * s.twFreq + s.twPhase);
+                const rip = rippleAt(s.dist) * 0.5;
+                const a = clamp((s.b * tw * gLift + rip) * 0.95, 0, 1), sz = s.size * (0.9 + 0.15 * tw + rip * 0.5);
+                ctx.fillStyle = rgba(s.col[0], s.col[1], s.col[2], a);
+                ctx.beginPath(); ctx.arc(x, y, sz, 0, TAU); ctx.fill();
+                if (s.b > 0.5 || rip > 0.2) {
+                    ctx.fillStyle = rgba(s.col[0], s.col[1], s.col[2], a * 0.18);
+                    ctx.beginPath(); ctx.arc(x, y, sz * 2.4, 0, TAU); ctx.fill();
+                }
+            }
+
+            for (const s of speak) {
+                const rx = s.gx * ca - s.gy * sa, ry = s.gx * sa + s.gy * ca;
+                const x = cx + rx * S, y = cy + ry * S;
+                const be = audio.spectrum[s.band] || 0, rip = rippleAt(s.dist);
+                const target = 0.18 + be * 0.95 + rip * 0.9 + audio.beatPulse * 0.12;
+                s.lit += (target - s.lit) * (1 - Math.pow(0.5, dt * 30));
+                star(ctx, x, y, s.col, clamp(s.lit, 0, 1.5), s.baseSize);
+            }
+
+            ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+        }
+    };
+}
+
+
+// ═════════════════════════════════════════════════════════════════
 // APP — Main Loop & Event Handling
 // ═════════════════════════════════════════════════════════════════
 class App {
@@ -2312,6 +2535,7 @@ class App {
             createMurmuration(),
             createVortex(),
             createCymatics(),
+            createCosmos(),
             createSupportScreen()
         ];
         this.currentPreset = 0;
