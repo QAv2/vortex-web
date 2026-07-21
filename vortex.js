@@ -80,6 +80,26 @@ function makeTrail(w, h) {
     return { canvas: c, ctx };
 }
 
+// Running-peak normalizer for time-domain waveforms. Real recordings rarely
+// swing full scale, so presets that draw the raw waveform track the recent
+// peak and normalize toward it — same philosophy as the per-band peak
+// normalization in AudioEngine. Attack is instant (peak jumps up so the
+// figure never overshoots the frame), decay is slow.
+function makeWaveGain() {
+    let peak = 0.25;
+    return (wf, dt) => {
+        let m = 0;
+        for (let i = 0; i < wf.length; i += 4) {
+            const a = Math.abs(wf[i]);
+            if (a > m) m = a;
+        }
+        if (m > peak) peak = m;
+        else peak *= Math.pow(0.988, dt * 30);
+        if (peak < 0.05) peak = 0.05;
+        return 0.88 / peak;
+    };
+}
+
 function formatTime(s) {
     if (!s || isNaN(s)) return '0:00';
     const m = Math.floor(s / 60);
@@ -506,7 +526,7 @@ function createSpectrumBars() {
             ctx.fillStyle = rgb(...BG);
             ctx.fillRect(0, 0, w, h);
 
-            const margin = 40;
+            const margin = 14;
             const gap = 2;
             const barW = Math.max(2, ((w - margin * 2) - gap * 63) / 64);
             const yBase = h - margin;
@@ -514,7 +534,7 @@ function createSpectrumBars() {
 
             for (let i = 0; i < 64; i++) {
                 const val = audio.spectrum[i];
-                const barH = val * 0.8 * areaH;
+                const barH = val * 0.97 * areaH;
                 const x = margin + i * (barW + gap);
                 const [r, g, b] = SPECTRUM_COLORS[i];
 
@@ -540,7 +560,7 @@ function createSpectrumBars() {
                     peaks[i] -= 0.005 * dt * 30;
                     if (peaks[i] < 0) peaks[i] = 0;
                 }
-                const peakY = yBase - peaks[i] * 0.8 * areaH;
+                const peakY = yBase - peaks[i] * 0.97 * areaH;
                 ctx.fillStyle = rgb(tr, tg, tb);
                 ctx.fillRect(x, peakY - 2, barW, 2);
             }
@@ -555,6 +575,7 @@ function createSpectrumBars() {
 // ═════════════════════════════════════════════════════════════════
 function createOscilloscope() {
     let trail, tc;
+    const gain = makeWaveGain();
     return {
         name: 'Oscilloscope',
         render(ctx, audio, dt, w, h) {
@@ -567,8 +588,9 @@ function createOscilloscope() {
             tc.fillRect(0, 0, w, h);
 
             if (audio.waveform) {
-                const margin = 40, cy = h / 2, amp = (h - 80) / 2;
+                const margin = 0, cy = h / 2, amp = h * 0.46;
                 const wf = audio.waveform;
+                const gA = gain(wf, dt);
                 const step = Math.max(1, (wf.length / (w - margin * 2)) | 0);
                 const beat = audio.beatPulse;
                 let r = 40 + (beat > 0.1 ? 200 * beat : 0) | 0;
@@ -580,7 +602,7 @@ function createOscilloscope() {
                 tc.lineWidth = 2;
                 tc.beginPath();
                 for (let x = 0; x < w - margin * 2; x++) {
-                    const y = cy - wf[Math.min(x * step, wf.length - 1)] * amp;
+                    const y = cy - wf[Math.min(x * step, wf.length - 1)] * gA * amp;
                     x === 0 ? tc.moveTo(margin, y) : tc.lineTo(margin + x, y);
                 }
                 tc.stroke();
@@ -590,7 +612,7 @@ function createOscilloscope() {
                 tc.lineWidth = 0.8;
                 tc.beginPath();
                 for (let x = 0; x < w - margin * 2; x++) {
-                    const y = cy - wf[Math.min(x * step, wf.length - 1)] * amp;
+                    const y = cy - wf[Math.min(x * step, wf.length - 1)] * gA * amp;
                     x === 0 ? tc.moveTo(margin, y) : tc.lineTo(margin + x, y);
                 }
                 tc.stroke();
@@ -605,7 +627,7 @@ function createOscilloscope() {
 // PRESET 3: PARTICLE FOUNTAIN
 // ═════════════════════════════════════════════════════════════════
 function createParticleFountain() {
-    const MAX = 800;
+    const MAX = 1400;
     const px = new Float32Array(MAX), py = new Float32Array(MAX);
     const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
     const life = new Float32Array(MAX), maxLife = new Float32Array(MAX);
@@ -649,21 +671,25 @@ function createParticleFountain() {
             const beat = audio.beatPulse;
 
             // ── Main jet: upward spray from center nozzle ──
-            // Spawn rate scales with overall energy
-            const baseRate = energy * 8 + bass * 4;
+            // Spawn rate scales with overall energy AND frame width, launch
+            // speed with frame height, so the spray fills the canvas it's
+            // given instead of a fixed-size puff in the middle.
+            const rateScale = w / 900;
+            const vFull = Math.sqrt(2 * 280 * (nozzleY - h * 0.06)); // reaches near top
+            const baseRate = (energy * 14 + bass * 6) * rateScale;
             spawnAccum += baseRate * dt * 30;
             const toSpawn = spawnAccum | 0;
             spawnAccum -= toSpawn;
 
             for (let s = 0; s < toSpawn; s++) {
                 const [cr, cg, cb] = freqColor(audio);
-                // Cone spread: wider with more energy, ±45° max
-                const spread = 0.2 + energy * 0.5 + beat * 0.2;
+                // Cone spread: wider with more energy, up to ±90°
+                const spread = Math.min(1, 0.45 + energy * 0.55 + beat * 0.2);
                 const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * spread;
-                const power = 200 + energy * 350 + bass * 150 + beat * 100;
-                const speed = power * (0.7 + Math.random() * 0.6);
-                const lt = 1.2 + energy * 1.8 + Math.random() * 0.5;
-                const size = 2.5 + energy * 3 + Math.random() * 1.5;
+                const power = vFull * (0.55 + energy * 0.5 + bass * 0.15 + beat * 0.15);
+                const speed = Math.min(vFull, power * (0.7 + Math.random() * 0.6));
+                const lt = 2 + energy * 2 + Math.random() * 0.6;
+                const size = 3.5 + energy * 3.5 + Math.random() * 2;
                 spawn(cx + (Math.random() - 0.5) * 6, nozzleY,
                     Math.cos(angle) * speed, Math.sin(angle) * speed,
                     lt, cr, cg, cb, size);
@@ -677,25 +703,25 @@ function createParticleFountain() {
                     const [cr, cg, cb] = freqColor(audio);
                     for (const dir of [-1, 1]) {
                         const angle = -Math.PI / 2 + dir * (0.6 + Math.random() * 0.3);
-                        const speed = 150 + bass * 200 + Math.random() * 80;
+                        const speed = vFull * (0.35 + bass * 0.35 + Math.random() * 0.15);
                         spawn(cx + dir * 8, nozzleY,
                             Math.cos(angle) * speed, Math.sin(angle) * speed,
-                            0.8 + bass * 1.2 + Math.random() * 0.3, cr, cg, cb, 2 + bass * 2);
+                            1.2 + bass * 1.4 + Math.random() * 0.4, cr, cg, cb, 3 + bass * 2.5);
                     }
                 }
             }
 
             // ── Beat eruption: wide radial burst ──
             if (audio.beatDetected) {
-                for (let i = 0; i < 50; i++) {
+                for (let i = 0; i < 70; i++) {
                     const [cr, cg, cb] = freqColor(audio);
                     const angle = -Math.PI * Math.random(); // upper hemisphere
-                    const speed = 250 + Math.random() * 300;
+                    const speed = vFull * (0.45 + Math.random() * 0.4);
                     spawn(cx + (Math.random() - 0.5) * 10, nozzleY,
                         Math.cos(angle) * speed, Math.sin(angle) * speed,
-                        0.8 + Math.random() * 0.8,
+                        1.2 + Math.random() * 1,
                         Math.min(255, cr + 60), Math.min(255, cg + 60), Math.min(255, cb + 60),
-                        4 + Math.random() * 3);
+                        4.5 + Math.random() * 3);
                 }
             }
 
@@ -714,6 +740,10 @@ function createParticleFountain() {
                 const frac = life[i] / maxLife[i];
                 let alpha = 1, s = sz[i];
                 if (frac < 0.25) { alpha = frac / 0.25; s *= (0.5 + 0.5 * alpha); }
+                // Soft halo — lights the space around each droplet
+                const hs = s * 2.4;
+                ctx.fillStyle = rgba(pr[i], pg[i], pb[i], alpha * 0.14);
+                ctx.fillRect(px[i] - hs / 2, py[i] - hs / 2, hs, hs);
                 // Outer glow
                 ctx.fillStyle = rgba(pr[i], pg[i], pb[i], alpha * 0.7);
                 ctx.fillRect(px[i] - s / 2, py[i] - s / 2, s, s);
@@ -761,6 +791,7 @@ function createParticleFountain() {
 // ═════════════════════════════════════════════════════════════════
 function createCircularWaveform() {
     let trail, tc;
+    const gain = makeWaveGain();
     const NP = 256;
     const cosT = new Float32Array(NP), sinT = new Float32Array(NP);
     for (let i = 0; i < NP; i++) {
@@ -778,12 +809,15 @@ function createCircularWaveform() {
             tc.fillRect(0, 0, w, h);
 
             const cx = w / 2, cy = h / 2;
-            const baseR = Math.min(w, h) * 0.25;
+            // Elliptical base — stretches to the frame's aspect so widescreen
+            // and 4:3 both fill, instead of a circle keyed to the short edge
+            const rxBase = w * 0.24, ryBase = h * 0.26;
             const breathing = 1 + audio.bass * 0.25 + audio.beatPulse * 0.15;
-            const r = baseR * breathing;
+            const rx = rxBase * breathing, ry = ryBase * breathing;
 
             if (audio.waveform) {
                 const wf = audio.waveform;
+                const g = gain(wf, dt);
                 const step = Math.max(1, (wf.length / NP) | 0);
                 const beat = audio.beatPulse, energy = audio.energy;
                 const cr = Math.min(255, 40 + beat * 180 + energy * 30);
@@ -794,9 +828,9 @@ function createCircularWaveform() {
                 tc.lineWidth = 2;
                 tc.beginPath();
                 for (let i = 0; i < NP; i++) {
-                    const sample = wf[Math.min(i * step, wf.length - 1)];
-                    const rad = r + sample * baseR * 0.5;
-                    const x = cx + cosT[i] * rad, y = cy + sinT[i] * rad;
+                    const sample = wf[Math.min(i * step, wf.length - 1)] * g;
+                    const rad = 1 + sample * 0.42;
+                    const x = cx + cosT[i] * rx * rad, y = cy + sinT[i] * ry * rad;
                     i === 0 ? tc.moveTo(x, y) : tc.lineTo(x, y);
                 }
                 tc.closePath();
@@ -806,7 +840,7 @@ function createCircularWaveform() {
                     tc.strokeStyle = rgba(80, 200, 255, beat * 0.14);
                     tc.lineWidth = 4;
                     tc.beginPath();
-                    tc.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+                    tc.ellipse(cx, cy, rx * 0.5, ry * 0.5, 0, 0, Math.PI * 2);
                     tc.stroke();
                 }
             }
@@ -827,14 +861,24 @@ function createRadialSpectrum() {
             ctx.fillStyle = rgb(...BG);
             ctx.fillRect(0, 0, w, h);
             const cx = w / 2, cy = h / 2;
-            const innerR = 35, maxLen = Math.min(w, h) * 0.38;
+            const innerR = Math.min(w, h) * 0.055;
+            // Each spoke reaches for the frame edge along its own angle, so
+            // the burst fills the rectangle instead of a short-edge circle
+            const pad = 6;
+            const halfW = w / 2 - pad, halfH = h / 2 - pad;
 
             for (let i = 0; i < 64; i++) {
                 const val = audio.spectrum[i];
-                const len = val * maxLen;
                 const angle = (i / 64) * Math.PI;
                 const [cr, cg, cb] = SPECTRUM_COLORS[i];
                 const cosA = Math.cos(angle), sinA = Math.sin(angle);
+                const edgeR = Math.min(
+                    Math.abs(cosA) > 1e-6 ? halfW / Math.abs(cosA) : Infinity,
+                    Math.abs(sinA) > 1e-6 ? halfH / Math.abs(sinA) : Infinity);
+                const maxLen = edgeR - innerR;
+                // Perceptual curve: bands rarely peak, so linear length
+                // wastes the outer half of every spoke — lift the mids
+                const len = Math.pow(val, 0.6) * maxLen;
 
                 for (const mirror of [1, -1]) {
                     ctx.strokeStyle = rgb(cr, cg, cb);
@@ -859,7 +903,7 @@ function createRadialSpectrum() {
                     peaks[i] -= 0.003 * dt * 30;
                     if (peaks[i] < 0) peaks[i] = 0;
                 }
-                const pd = innerR + peaks[i] * maxLen;
+                const pd = innerR + Math.pow(peaks[i], 0.6) * maxLen;
                 const tr = Math.min(255, cr + 50), tg = Math.min(255, cg + 50), tb = Math.min(255, cb + 50);
                 for (const mirror of [1, -1]) {
                     ctx.fillStyle = rgb(tr, tg, tb);
@@ -927,6 +971,7 @@ function createSpectrogram() {
 // ═════════════════════════════════════════════════════════════════
 function createLissajous() {
     let trail, tc;
+    const gain = makeWaveGain();
     return {
         name: 'Lissajous',
         render(ctx, audio, dt, w, h) {
@@ -940,9 +985,12 @@ function createLissajous() {
             if (audio.waveform) {
                 const wf = audio.waveform, n = wf.length;
                 const offset = (n / 4 + audio.mid * n * 0.1) | 0;
-                const scale = Math.min(w, h) * 0.35;
+                // Per-axis scale + running-peak gain: the figure swings the
+                // full frame on both axes regardless of recording level
+                const g = gain(wf, dt);
+                const sx = (w / 2) * 0.94 * g, sy = (h / 2) * 0.90 * g;
                 const cx = w / 2, cy = h / 2;
-                const numPts = 400, step = Math.max(1, (n / numPts) | 0);
+                const numPts = 640, step = Math.max(1, (n / numPts) | 0);
                 const beat = audio.beatPulse, energy = audio.energy;
                 const cr = Math.min(255, 60 + beat * 180);
                 const cg = Math.min(255, 100 + energy * 80);
@@ -953,8 +1001,8 @@ function createLissajous() {
                 tc.beginPath();
                 for (let p = 0; p < numPts; p++) {
                     const idx = p * step;
-                    const x = cx + wf[idx % n] * scale;
-                    const y = cy + wf[(idx + offset) % n] * scale;
+                    const x = cx + wf[idx % n] * sx;
+                    const y = cy + wf[(idx + offset) % n] * sy;
                     p === 0 ? tc.moveTo(x, y) : tc.lineTo(x, y);
                 }
                 tc.stroke();
@@ -964,21 +1012,14 @@ function createLissajous() {
                 tc.beginPath();
                 for (let p = 0; p < numPts; p++) {
                     const idx = p * step;
-                    const x = cx + wf[idx % n] * scale;
-                    const y = cy + wf[(idx + offset) % n] * scale;
+                    const x = cx + wf[idx % n] * sx;
+                    const y = cy + wf[(idx + offset) % n] * sy;
                     p === 0 ? tc.moveTo(x, y) : tc.lineTo(x, y);
                 }
                 tc.stroke();
             }
 
             ctx.drawImage(trail, 0, 0);
-            // Crosshair
-            ctx.strokeStyle = rgba(60, 60, 80, 0.3);
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h);
-            ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2);
-            ctx.stroke();
         }
     };
 }
@@ -1010,7 +1051,13 @@ function createSacredGeometry() {
             tc.fillRect(0, 0, w, h);
 
             const cx = w / 2, cy = h / 2;
-            const baseR = 35, ringGap = 38;
+            // Rings scale with the frame (was fixed 35px/38px — a medallion
+            // that ignored resolution); gentle horizontal stretch on
+            // widescreen so the mandala isn't short-edge-bound
+            const minEdge = Math.min(w, h);
+            const baseR = minEdge * 0.075;
+            const ringGap = (minEdge * 0.375 - baseR) / (RINGS.length - 1);
+            const ax = Math.min(1.25, Math.max(1, (w / h) * 0.7));
             const breathing = 0.85 + audio.energy * 0.4 + audio.beatPulse * 0.1;
             rotation += (0.3 + audio.energy * 0.8) * dt;
 
@@ -1034,7 +1081,7 @@ function createSacredGeometry() {
                 tc.beginPath();
                 for (let v = 0; v <= ring.sides; v++) {
                     const angle = rot + (v / ring.sides) * Math.PI * 2;
-                    const x = cx + Math.cos(angle) * radius;
+                    const x = cx + Math.cos(angle) * radius * ax;
                     const y = cy + Math.sin(angle) * radius;
                     v === 0 ? tc.moveTo(x, y) : tc.lineTo(x, y);
                     if (v < ring.sides) verts.push([x, y]);
@@ -1073,7 +1120,12 @@ function createStarfield() {
     const N = 300;
     const sx = new Float32Array(N), sy = new Float32Array(N), sz = new Float32Array(N);
     const psx = new Float32Array(N), psy = new Float32Array(N), psz = new Float32Array(N);
+    // Subtle per-star temperature: warm-white through cool-blue
+    const tintR = new Float32Array(N), tintB = new Float32Array(N);
     for (let i = 0; i < N; i++) {
+        const t = Math.random();
+        tintR[i] = 1.05 - t * 0.22;
+        tintB[i] = 0.88 + t * 0.18;
         sx[i] = (Math.random() - 0.5) * 2;
         sy[i] = (Math.random() - 0.5) * 2;
         sz[i] = Math.random() * 0.9 + 0.1;
@@ -1088,7 +1140,7 @@ function createStarfield() {
                 ({ canvas: trail, ctx: tc } = makeTrail(w, h));
             }
             const energy = audio.energy, beat = audio.beatPulse;
-            const dimVal = 30 + energy * 25;
+            const dimVal = 20 + energy * 20;
             const da = 1 - Math.pow(1 - dimVal / 255, dt * 30);
             tc.fillStyle = rgba(...BG, da);
             tc.fillRect(0, 0, w, h);
@@ -1125,20 +1177,21 @@ function createStarfield() {
                     continue;
                 }
 
-                const brightness = clamp((1 - sz[i]) * 1.5, 0.1, 1);
-                const cr = Math.min(255, br * brightness);
+                const brightness = clamp(0.35 + (1 - sz[i]) * 1.7, 0.25, 1);
+                const cr = Math.min(255, br * brightness * tintR[i]);
                 const cg = Math.min(255, bg * brightness);
-                const cb = Math.min(255, bb * brightness);
+                const cb = Math.min(255, bb * brightness * tintB[i]);
 
                 tc.strokeStyle = rgb(cr, cg, cb);
-                tc.lineWidth = 1;
+                tc.lineWidth = 1 + (1 - sz[i]) * 1.4;
                 tc.beginPath();
                 tc.moveTo(prevX, prevY);
                 tc.lineTo(scrX, scrY);
                 tc.stroke();
 
-                tc.fillStyle = rgb(Math.min(255, cr + 50), Math.min(255, cg + 50), Math.min(255, cb + 50));
-                tc.fillRect(scrX - 1, scrY - 1, 2, 2);
+                const hs = 2 + (1 - sz[i]) * 2;
+                tc.fillStyle = rgb(Math.min(255, cr + 70), Math.min(255, cg + 70), Math.min(255, cb + 70));
+                tc.fillRect(scrX - hs / 2, scrY - hs / 2, hs, hs);
             }
             ctx.drawImage(trail, 0, 0);
         }
@@ -1709,7 +1762,7 @@ function createMurmuration() {
 // the arms down into a single point of light that rings on beats.
 function createVortex() {
     const THETA_MAX = Math.PI * 5;   // 2.5 turns per arm
-    const STEPS = 200;
+    const STEPS = 300;
     const NP = 240;                  // infall particles
     const pTheta = new Float32Array(NP);
     const pChir = new Uint8Array(NP);
@@ -1743,7 +1796,11 @@ function createVortex() {
             tc.fillRect(0, 0, w, h);
 
             const cx = w / 2, cy = h / 2;
-            const rOut = Math.min(w, h) * 0.46;
+            // Spiral fits the height; horizontal axis stretches to the frame
+            // width (xs > 1 on widescreen) so the arms reach the sides too.
+            // 0.42 leaves room for the ±18% amplitude swell without clipping.
+            const rOut = h * 0.42;
+            const xs = (w * 0.42) / rOut;
             const rCore = 9;
             const k = Math.log(rOut / rCore) / THETA_MAX;
             rot += dt * (0.12 + energy * 0.7 + beat * 0.3);
@@ -1765,7 +1822,7 @@ function createVortex() {
                 const amp = armAmp(audio.spectrum, frac);
                 const r = rCore * Math.exp(k * th) * (1 + amp * 0.18);
                 const a = sgn * th + phase + pArm[i] * Math.PI;
-                const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
+                const x = cx + Math.cos(a) * r * xs, y = cy + Math.sin(a) * r;
                 const [cr, cg, cb] = SPECTRUM_COLORS[Math.min(63, ((1 - frac) * 63) | 0)];
                 const bright = 0.6 + amp * 0.4;
                 tc.fillStyle = rgba(cr * bright + 80, cg * bright + 80, cb * bright + 80, 0.95);
@@ -1783,7 +1840,7 @@ function createVortex() {
                 tc.strokeStyle = rgba(255, 235, 190, ring.a);
                 tc.lineWidth = 1.5;
                 tc.beginPath();
-                tc.arc(cx, cy, ring.r, 0, Math.PI * 2);
+                tc.ellipse(cx, cy, ring.r * xs, ring.r, 0, 0, Math.PI * 2);
                 tc.stroke();
             }
 
@@ -1808,7 +1865,7 @@ function createVortex() {
                         const amp = armAmp(audio.spectrum, th / THETA_MAX);
                         const r = rCore * Math.exp(k * th) * (1 + amp * 0.18);
                         const a = sgn * th + phase + off;
-                        const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
+                        const x = cx + Math.cos(a) * r * xs, y = cy + Math.sin(a) * r;
                         s === 2 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
                     }
                     ctx.stroke();
@@ -1829,8 +1886,8 @@ function createVortex() {
                             : rgba(110 * lum, (190 + beat * 45) * lum, 255 * lum, 0.9);
                         ctx.lineWidth = 1.3 + amp * 1.8;
                         ctx.beginPath();
-                        ctx.moveTo(cx + Math.cos(a0) * r0, cy + Math.sin(a0) * r0);
-                        ctx.lineTo(cx + Math.cos(a1) * r1, cy + Math.sin(a1) * r1);
+                        ctx.moveTo(cx + Math.cos(a0) * r0 * xs, cy + Math.sin(a0) * r0);
+                        ctx.lineTo(cx + Math.cos(a1) * r1 * xs, cy + Math.sin(a1) * r1);
                         ctx.stroke();
                     }
                 }
@@ -1860,7 +1917,7 @@ function createVortex() {
 // bass picks the coarse pattern, treble the fine one. Beats strike
 // the plate and shatter the figure; quiet lets it crystallize.
 function createCymatics() {
-    const N = 3600;
+    const N = 4600;
     const gu = new Float32Array(N), gv = new Float32Array(N);
     let seeded = false;
 
@@ -1936,21 +1993,24 @@ function createCymatics() {
             if (audio.beatDetected) strike = Math.min(1, strike + 0.1 + Math.max(0, bass - 0.3) * 1.3);
             strike *= Math.pow(0.14, dt);
 
-            const side = Math.min(w, h) * 0.84;
-            const half = side / 2;
+            // The plate spans the whole frame — the field math stays in
+            // square (u,v) space, rendered anamorphically, so the figures
+            // keep their nodal structure while every pixel belongs to sand
+            const halfX = w / 2 - w * 0.03;
+            const halfY = h / 2 - h * 0.04;
             const cx = w / 2, cy = h / 2;
 
             // Plate chrome
             ctx.strokeStyle = rgba(150, 160, 190, 0.16);
             ctx.lineWidth = 1;
-            ctx.strokeRect(cx - half, cy - half, side, side);
+            ctx.strokeRect(cx - halfX, cy - halfY, halfX * 2, halfY * 2);
             const tick = 7;
             ctx.strokeStyle = rgba(150, 160, 190, 0.35);
             for (const [tx, ty] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
                 ctx.beginPath();
-                ctx.moveTo(cx + tx * half, cy + ty * half - ty * tick);
-                ctx.lineTo(cx + tx * half, cy + ty * half);
-                ctx.lineTo(cx + tx * half - tx * tick, cy + ty * half);
+                ctx.moveTo(cx + tx * halfX, cy + ty * halfY - ty * tick);
+                ctx.lineTo(cx + tx * halfX, cy + ty * halfY);
+                ctx.lineTo(cx + tx * halfX - tx * tick, cy + ty * halfY);
                 ctx.stroke();
             }
 
@@ -1998,7 +2058,7 @@ function createCymatics() {
                 const sett = 1 - Math.min(1, Math.abs(f) * 1.5);
                 const lvl = (sett * 9.99) | 0;
                 ctx.fillStyle = sett > 0.55 ? WARM[lvl] : COOL[lvl];
-                const px = cx + nu * half, py = cy + nv * half;
+                const px = cx + nu * halfX, py = cy + nv * halfY;
                 const sz = sett > 0.55 ? 2 : 1.5;
                 ctx.fillRect(px - sz / 2, py - sz / 2, sz, sz);
             }
@@ -2014,12 +2074,17 @@ function createCymatics() {
             ctx.arc(cx, cy, drvR, 0, Math.PI * 2);
             ctx.fill();
 
-            // Readout — names the figure, or the tween in progress
-            ctx.font = '11px "Courier New", monospace';
-            ctx.fillStyle = rgba(150, 160, 190, 0.5);
-            ctx.textAlign = 'left';
+            // Readout — names the figure, or the tween in progress.
+            // Inside the plate, clear of CRT overscan, on a dark backing
+            // strip so the sand can't drown it.
             const label = morphing ? `mode (${A.m},${A.n}) → (${B.m},${B.n})` : `mode (${B.m},${B.n})`;
-            ctx.fillText(label, cx - half + 2, cy - half - 8);
+            ctx.font = '11px "Courier New", monospace';
+            const tw = ctx.measureText(label).width;
+            ctx.fillStyle = rgba(8, 8, 12, 0.9);
+            ctx.fillRect(cx - halfX + 8, cy - halfY + 6, tw + 14, 17);
+            ctx.fillStyle = rgba(190, 200, 230, 0.9);
+            ctx.textAlign = 'left';
+            ctx.fillText(label, cx - halfX + 15, cy - halfY + 18);
         }
     };
 }
@@ -2452,7 +2517,10 @@ function createCosmos() {
                 return s;
             };
 
-            const cx = w / 2, cy = h / 2, S = Math.min(w, h) * 0.46;
+            // Per-axis scale: the disc fills the frame's width AND height
+            // (a stretched circular disc reads as an inclined galaxy)
+            const cx = w / 2, cy = h / 2;
+            const Sx = w * 0.41, Sy = h * 0.41, S = (Sx + Sy) / 2;
             const ca = Math.cos(angle), sa = Math.sin(angle);
 
             ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
@@ -2461,7 +2529,7 @@ function createCosmos() {
 
             for (const b of nebula) {
                 const rx = b.gx * ca - b.gy * sa, ry = b.gx * sa + b.gy * ca;
-                const x = cx + rx * S, y = cy + ry * S;
+                const x = cx + rx * Sx, y = cy + ry * Sy;
                 const breath = b.core ? (0.85 + bass * 0.6) : (0.8 + mid * 0.4 + energy * 0.2);
                 const rad = b.rad * S * (0.9 + energy * 0.2);
                 const a = clamp((b.core ? 0.16 : 0.10) * breath, 0, 0.4);
@@ -2485,7 +2553,7 @@ function createCosmos() {
 
             for (const s of galaxy) {
                 const rx = s.gx * ca - s.gy * sa, ry = s.gx * sa + s.gy * ca;
-                const x = cx + rx * S, y = cy + ry * S;
+                const x = cx + rx * Sx, y = cy + ry * Sy;
                 const tw = 1 + s.twAmp * Math.sin(time * s.twFreq + s.twPhase);
                 const rip = rippleAt(s.dist) * 0.5;
                 const a = clamp((s.b * tw * gLift + rip) * 0.95, 0, 1), sz = s.size * (0.9 + 0.15 * tw + rip * 0.5);
@@ -2499,7 +2567,7 @@ function createCosmos() {
 
             for (const s of speak) {
                 const rx = s.gx * ca - s.gy * sa, ry = s.gx * sa + s.gy * ca;
-                const x = cx + rx * S, y = cy + ry * S;
+                const x = cx + rx * Sx, y = cy + ry * Sy;
                 const be = audio.spectrum[s.band] || 0, rip = rippleAt(s.dist);
                 const target = 0.18 + be * 0.95 + rip * 0.9 + audio.beatPulse * 0.12;
                 s.lit += (target - s.lit) * (1 - Math.pow(0.5, dt * 30));
@@ -2567,6 +2635,18 @@ class App {
         this.mobileVisible = false;
         this.mobileHideTimer = 0;
 
+        // Render quality — internal resolution the presets draw at; CSS
+        // scales it to the viewport (Q key cycles, persisted). Lower levels
+        // cost less CPU and are the native choice for a 480i CRT chain.
+        this.qualityLevels = [
+            { label: 'Native', h: 0 },
+            { label: '720p', h: 720 },
+            { label: '480p', h: 480 },
+            { label: '360p', h: 360 },
+        ];
+        const savedQ = parseInt(localStorage.getItem('vortex-quality') || '0', 10);
+        this.qualityIdx = (savedQ >= 0 && savedQ < this.qualityLevels.length) ? savedQ : 0;
+
         this._resize();
         this._setupEvents();
         if (this.isMobile) this._setupMobile();
@@ -2609,8 +2689,11 @@ class App {
     }
 
     _resize() {
-        this.w = window.innerWidth;
-        this.h = window.innerHeight;
+        const q = this.qualityLevels[this.qualityIdx];
+        const s = q.h ? Math.min(1, q.h / window.innerHeight) : 1;
+        this.renderScale = s;
+        this.w = Math.max(2, Math.round(window.innerWidth * s));
+        this.h = Math.max(2, Math.round(window.innerHeight * s));
         this.canvas.width = this.w;
         this.canvas.height = this.h;
         this.offA.width = this.w; this.offA.height = this.h;
@@ -2650,10 +2733,12 @@ class App {
             const preset = this.presets[this.currentPreset];
             if (preset.handleMove) {
                 const rect = this.canvas.getBoundingClientRect();
-                preset.handleMove(e.clientX - rect.left, e.clientY - rect.top);
+                const kx = this.canvas.width / rect.width, ky = this.canvas.height / rect.height;
+                const mx = (e.clientX - rect.left) * kx, my = (e.clientY - rect.top) * ky;
+                preset.handleMove(mx, my);
                 this.canvas.style.cursor = preset.isSupportScreen && preset.btnRect &&
-                    e.clientX - rect.left >= preset.btnRect.x && e.clientX - rect.left <= preset.btnRect.x + preset.btnRect.w &&
-                    e.clientY - rect.top >= preset.btnRect.y && e.clientY - rect.top <= preset.btnRect.y + preset.btnRect.h
+                    mx >= preset.btnRect.x && mx <= preset.btnRect.x + preset.btnRect.w &&
+                    my >= preset.btnRect.y && my <= preset.btnRect.y + preset.btnRect.h
                     ? 'pointer' : '';
             } else {
                 this.canvas.style.cursor = '';
@@ -2663,7 +2748,9 @@ class App {
             const preset = this.presets[this.currentPreset];
             if (preset.handleClick) {
                 const rect = this.canvas.getBoundingClientRect();
-                preset.handleClick(e.clientX - rect.left, e.clientY - rect.top);
+                preset.handleClick(
+                    (e.clientX - rect.left) * (this.canvas.width / rect.width),
+                    (e.clientY - rect.top) * (this.canvas.height / rect.height));
             }
         });
 
@@ -3077,6 +3164,14 @@ class App {
                 if (this.audio.isCapturing) this._stopLiveCapture();
                 else document.getElementById('live-picker').classList.add('active');
                 break;
+            case 'q': case 'Q': {
+                this.qualityIdx = (this.qualityIdx + 1) % this.qualityLevels.length;
+                localStorage.setItem('vortex-quality', String(this.qualityIdx));
+                this._resize();
+                const q = this.qualityLevels[this.qualityIdx];
+                this.ui.toast(`Render quality: ${q.label}${q.h ? ` (${this.w}×${this.h})` : ''}`);
+                break;
+            }
             case 'Escape':
                 this.helpEl.classList.remove('active');
                 this.playlistEl.classList.remove('active');
