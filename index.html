@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vortex — Music Visualizer</title>
+    <meta name="description" content="Vortex — Real-time music visualizer in your browser. 14 presets, zero install.">
+    <meta property="og:title" content="Vortex — Music Visualizer">
+    <meta property="og:description" content="14 real-time visualizer presets. Drag in your music, pick a visual, go full screen. No install needed.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://qav2.github.io/vortex-web/">
+    <meta property="og:image" content="https://qav2.github.io/vortex-web/og-image.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Vortex — Music Visualizer">
+    <meta name="twitter:description" content="14 real-time visualizer presets. Drag in your music, pick a visual, go full screen.">
+    <meta name="twitter:image" content="https://qav2.github.io/vortex-web/og-image.png">
+    <meta name="theme-color" content="#08080c">
+    <link rel="canonical" href="https://qav2.github.io/vortex-web/">
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #08080c;
+            color: #dcdce6;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+            user-select: none;
+        }
+        #canvas { display: block; }
+        #drop-zone {
+            position: fixed;
+            inset: 0;
+            background: rgba(80, 200, 255, 0.06);
+            border: 3px dashed rgba(80, 200, 255, 0.4);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            font-size: 22px;
+            color: #50c8ff;
+            pointer-events: none;
+        }
+        #drop-zone.active { display: flex; }
+        #welcome {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+            gap: 20px;
+        }
+        #welcome h1 {
+            font-size: 52px;
+            color: #50c8ff;
+            letter-spacing: 10px;
+            text-transform: uppercase;
+            font-weight: 300;
+        }
+        #welcome .sub {
+            color: #8888a0;
+            font-size: 15px;
+        }
+        #welcome button {
+            background: rgba(80, 200, 255, 0.12);
+            border: 1px solid rgba(80, 200, 255, 0.35);
+            color: #50c8ff;
+            padding: 14px 36px;
+            font-family: inherit;
+            font-size: 15px;
+            cursor: pointer;
+            transition: background 0.2s;
+            letter-spacing: 2px;
+        }
+        #welcome button:hover { background: rgba(80, 200, 255, 0.22); }
+        #welcome .keys {
+            font-size: 13px;
+            color: #787890;
+            line-height: 1.8;
+            text-align: center;
+        }
+        #welcome .keys .help-hint {
+            color: #50c8ff;
+            font-size: 14px;
+        }
+        #welcome .flash-warning {
+            color: #7a6a50;
+            font-size: 11px;
+            margin-top: 4px;
+        }
+        #file-input {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+
+        /* ── Mobile Controls ── */
+        #mobile-controls {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 56px;
+            background: rgba(8, 8, 12, 0.92);
+            border-top: 1px solid rgba(80, 200, 255, 0.15);
+            display: none;
+            align-items: center;
+            justify-content: space-evenly;
+            z-index: 70;
+            padding: 0 4px;
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+        }
+        #mobile-controls.active { display: flex; }
+        #mobile-controls button {
+            background: none;
+            border: none;
+            color: #8888a0;
+            font-size: 22px;
+            width: 44px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+            border-radius: 8px;
+            transition: background 0.15s, color 0.15s;
+        }
+        #mobile-controls button:active { background: rgba(80, 200, 255, 0.12); }
+        #mobile-controls button.accent { color: #50c8ff; }
+        #mobile-controls .mc-divider {
+            width: 1px;
+            height: 28px;
+            background: rgba(80, 200, 255, 0.1);
+            flex-shrink: 0;
+        }
+
+        /* Mobile seek bar — wider touch target */
+        #mobile-seek {
+            position: fixed;
+            bottom: 56px;
+            left: 0;
+            right: 0;
+            height: 20px;
+            background: rgba(8, 8, 12, 0.7);
+            display: none;
+            z-index: 70;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #mobile-seek.active { display: block; }
+        #mobile-seek .seek-track {
+            position: absolute;
+            bottom: 4px;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: #282832;
+        }
+        #mobile-seek .seek-fill {
+            height: 100%;
+            background: #50c8ff;
+            width: 0%;
+            transition: width 0.1s linear;
+        }
+
+        /* Desktop seek bar */
+        #desktop-seek {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 24px;
+            z-index: 65;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        #desktop-seek.visible { opacity: 1; }
+        #desktop-seek .ds-track {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: rgba(40, 40, 50, 0.8);
+            transition: height 0.15s;
+        }
+        #desktop-seek:hover .ds-track { height: 6px; }
+        #desktop-seek .ds-fill {
+            height: 100%;
+            background: #50c8ff;
+            width: 0%;
+            pointer-events: none;
+        }
+        #desktop-seek .ds-handle {
+            position: absolute;
+            bottom: -4px;
+            width: 12px;
+            height: 12px;
+            background: #50c8ff;
+            border-radius: 50%;
+            transform: translateX(-50%) scale(0);
+            transition: transform 0.15s;
+            pointer-events: none;
+        }
+        #desktop-seek:hover .ds-handle,
+        #desktop-seek.dragging .ds-handle { transform: translateX(-50%) scale(1); }
+        #desktop-seek .ds-tooltip {
+            position: absolute;
+            bottom: 20px;
+            background: rgba(0, 0, 0, 0.85);
+            color: #dcdce6;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+            padding: 3px 8px;
+            border-radius: 3px;
+            transform: translateX(-50%);
+            pointer-events: none;
+            display: none;
+            white-space: nowrap;
+        }
+        #desktop-seek:hover .ds-tooltip { display: block; }
+        @media (hover: none) and (pointer: coarse) {
+            #desktop-seek { display: none !important; }
+        }
+
+        /* Mobile help overlay adjustments */
+        #mobile-help-hint { display: none; }
+
+        /* ── Responsive ── */
+        @media (max-width: 600px) {
+            #welcome h1 { font-size: 32px; letter-spacing: 6px; }
+            #welcome .sub { font-size: 13px; }
+            #welcome button { padding: 12px 28px; font-size: 14px; }
+            #welcome .keys { display: none; }
+            #mobile-help-hint { display: block; color: #787890; font-size: 13px; line-height: 1.8; text-align: center; }
+            #help-overlay .help-key { min-width: 80px; font-size: 13px; }
+            #help-overlay .help-desc { font-size: 13px; }
+            #help-overlay h2 { font-size: 22px; }
+            #playlist-panel { width: 100vw; }
+        }
+        @media (hover: none) and (pointer: coarse) {
+            #welcome .keys { display: none; }
+            #welcome .drag-hint { display: none; }
+            #mobile-help-hint { display: block; color: #787890; font-size: 13px; line-height: 1.8; text-align: center; }
+        }
+
+        /* Help overlay */
+        #help-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(8, 8, 12, 0.92);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 80;
+        }
+        #help-overlay.active { display: flex; }
+        #help-overlay .help-content { max-width: 520px; width: 90%; }
+        #help-overlay h2 {
+            color: #50c8ff;
+            font-size: 28px;
+            font-weight: 300;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+        #help-overlay .help-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(80, 80, 100, 0.15);
+        }
+        #help-overlay .help-key { color: #50c8ff; min-width: 120px; font-size: 14px; }
+        #help-overlay .help-desc { color: #8888a0; text-align: right; font-size: 14px; }
+        #help-overlay .help-section {
+            color: #5a5a70;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-top: 16px;
+            margin-bottom: 6px;
+        }
+
+        /* Playlist panel */
+        #playlist-panel {
+            position: fixed;
+            top: 0;
+            right: 0;
+            width: 300px;
+            height: 100vh;
+            background: rgba(8, 8, 12, 0.92);
+            border-left: 1px solid rgba(80, 200, 255, 0.15);
+            display: none;
+            flex-direction: column;
+            z-index: 60;
+            overflow: hidden;
+        }
+        #playlist-panel.active { display: flex; }
+        #playlist-panel .pl-header {
+            padding: 16px;
+            color: #50c8ff;
+            font-size: 14px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            border-bottom: 1px solid rgba(80, 200, 255, 0.1);
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        #pl-add-btn {
+            background: rgba(80, 200, 255, 0.12);
+            border: 1px solid rgba(80, 200, 255, 0.25);
+            color: #50c8ff;
+            font-size: 18px;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            border-radius: 6px;
+            font-family: inherit;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #pl-add-btn:active { background: rgba(80, 200, 255, 0.25); }
+        #playlist-panel .pl-tracks {
+            flex: 1;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #282832 transparent;
+        }
+        #playlist-panel .pl-track {
+            padding: 10px 16px;
+            color: #8888a0;
+            font-size: 13px;
+            cursor: pointer;
+            border-bottom: 1px solid rgba(40, 40, 50, 0.4);
+            transition: background 0.15s;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #playlist-panel .pl-track:hover { background: rgba(80, 200, 255, 0.06); }
+        #playlist-panel .pl-track.active {
+            color: #50c8ff;
+            background: rgba(80, 200, 255, 0.08);
+        }
+        #playlist-panel .pl-empty {
+            padding: 24px 16px;
+            color: #3a3a50;
+            font-size: 13px;
+            text-align: center;
+        }
+
+        /* ── Live Audio Button ── */
+        #live-btn {
+            background: rgba(255, 60, 60, 0.10);
+            border: 1px solid rgba(255, 60, 60, 0.35);
+            color: #ff5050;
+            padding: 14px 36px;
+            font-family: inherit;
+            font-size: 15px;
+            cursor: pointer;
+            transition: background 0.2s;
+            letter-spacing: 2px;
+        }
+        #live-btn:hover { background: rgba(255, 60, 60, 0.22); }
+
+        /* ── Live Source Picker ── */
+        #live-picker {
+            position: fixed;
+            inset: 0;
+            background: rgba(8, 8, 12, 0.94);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 90;
+        }
+        #live-picker.active { display: flex; }
+        #live-picker .lp-content {
+            max-width: 400px;
+            width: 90%;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        #live-picker h2 {
+            color: #ff5050;
+            font-size: 24px;
+            font-weight: 300;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+        .lp-option {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #dcdce6;
+            padding: 16px;
+            font-family: inherit;
+            cursor: pointer;
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            transition: background 0.2s, border-color 0.2s;
+        }
+        .lp-option:hover {
+            background: rgba(255, 60, 60, 0.08);
+            border-color: rgba(255, 60, 60, 0.3);
+        }
+        .lp-option:disabled {
+            opacity: 0.25;
+            cursor: not-allowed;
+        }
+        .lp-option:disabled:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.08);
+        }
+        .lp-icon { font-size: 18px; }
+        .lp-label { font-size: 15px; letter-spacing: 1px; }
+        .lp-desc { font-size: 11px; color: #78788c; }
+        .lp-cancel {
+            background: none;
+            border: 1px solid rgba(120, 120, 140, 0.3);
+            color: #78788c;
+            padding: 10px;
+            font-family: inherit;
+            font-size: 14px;
+            cursor: pointer;
+            letter-spacing: 2px;
+            margin-top: 4px;
+            transition: color 0.2s;
+        }
+        .lp-cancel:hover { color: #dcdce6; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="drop-zone">Drop audio files here</div>
+    <div id="welcome">
+        <h1>Vortex</h1>
+        <p class="sub">Real-time music visualizer</p>
+        <button id="browse-btn">Browse Files</button>
+        <button id="live-btn">Live Audio</button>
+        <p class="sub drag-hint">or drag &amp; drop audio files anywhere</p>
+        <div class="keys">
+            Space: play/pause &bull; &larr;&rarr;: presets &bull; &uarr;&darr;: volume<br>
+            <span class="help-hint">Press H for full controls</span>
+        </div>
+        <div id="mobile-help-hint">
+            Swipe &larr;&rarr; to change visuals<br>
+            Tap screen to show controls
+        </div>
+        <p class="flash-warning">Contains flashing visuals &mdash; viewer discretion advised for photosensitive individuals</p>
+    </div>
+    <div id="help-overlay">
+        <div class="help-content">
+            <h2>Controls</h2>
+            <div class="help-section">Playback</div>
+            <div class="help-row"><span class="help-key">Space</span><span class="help-desc">Play / Pause</span></div>
+            <div class="help-row"><span class="help-key">N / P</span><span class="help-desc">Next / Previous Track</span></div>
+            <div class="help-row"><span class="help-key">&uarr; / &darr;</span><span class="help-desc">Volume Up / Down</span></div>
+            <div class="help-row"><span class="help-key">S</span><span class="help-desc">Toggle Shuffle</span></div>
+            <div class="help-row"><span class="help-key">R</span><span class="help-desc">Toggle Repeat</span></div>
+            <div class="help-section">Visuals</div>
+            <div class="help-row"><span class="help-key">&larr; / &rarr;</span><span class="help-desc">Cycle Presets</span></div>
+            <div class="help-row"><span class="help-key">1 &ndash; 9, 0</span><span class="help-desc">Select Preset</span></div>
+            <div class="help-row"><span class="help-key">A</span><span class="help-desc">Auto-Cycle (beat-synced)</span></div>
+            <div class="help-row"><span class="help-key">F</span><span class="help-desc">Fullscreen</span></div>
+            <div class="help-section">Live Capture</div>
+            <div class="help-row"><span class="help-key">C</span><span class="help-desc">Live Audio / Stop Capture</span></div>
+            <div class="help-section">Panels</div>
+            <div class="help-row"><span class="help-key">L</span><span class="help-desc">Playlist</span></div>
+            <div class="help-row"><span class="help-key">H / ?</span><span class="help-desc">This Help Screen</span></div>
+            <div style="text-align:center;margin-top:24px;color:#3a3a50;font-size:12px;">Press H or ? to close</div>
+        </div>
+    </div>
+    <div id="live-picker">
+        <div class="lp-content">
+            <h2>Live Audio Source</h2>
+            <button id="lp-display" class="lp-option">
+                <span class="lp-icon">&#9654;</span>
+                <span class="lp-label">Screen / Tab Audio</span>
+                <span class="lp-desc">Capture audio from another tab or app (Desktop Chrome/Edge)</span>
+            </button>
+            <button id="lp-mic" class="lp-option">
+                <span class="lp-icon">&#127908;</span>
+                <span class="lp-label">Microphone</span>
+                <span class="lp-desc">Visualize audio picked up by your mic</span>
+            </button>
+            <button id="lp-system" class="lp-option">
+                <span class="lp-icon">&#128266;</span>
+                <span class="lp-label">System Audio</span>
+                <span class="lp-desc">Capture all device audio (Android app only)</span>
+            </button>
+            <button id="lp-cancel" class="lp-cancel">Cancel</button>
+        </div>
+    </div>
+    <div id="playlist-panel">
+        <div class="pl-header">
+            <span>Playlist</span>
+            <button id="pl-add-btn" title="Add files">+</button>
+        </div>
+        <div class="pl-tracks" id="pl-tracks">
+            <div class="pl-empty">No tracks loaded</div>
+        </div>
+    </div>
+    <div id="desktop-seek">
+        <div class="ds-track"><div class="ds-fill" id="ds-fill"></div></div>
+        <div class="ds-handle" id="ds-handle"></div>
+        <div class="ds-tooltip" id="ds-tooltip">0:00</div>
+    </div>
+    <div id="mobile-seek">
+        <div class="seek-track"><div class="seek-fill" id="seek-fill"></div></div>
+    </div>
+    <div id="mobile-controls">
+        <button id="mc-prev" title="Previous">&#9198;</button>
+        <button id="mc-play" class="accent" title="Play/Pause">&#9654;</button>
+        <button id="mc-next" title="Next">&#9197;</button>
+        <div class="mc-divider"></div>
+        <button id="mc-preset-prev" title="Previous Preset">&#9664;</button>
+        <button id="mc-preset-next" title="Next Preset">&#9654;</button>
+        <div class="mc-divider"></div>
+        <button id="mc-vol-down" title="Volume Down">&#128265;</button>
+        <button id="mc-vol-up" title="Volume Up">&#128266;</button>
+        <div class="mc-divider"></div>
+        <button id="mc-add" title="Add Files">&#43;</button>
+        <button id="mc-playlist" title="Playlist">&#9776;</button>
+        <button id="mc-fullscreen" title="Fullscreen">&#x26F6;</button>
+    </div>
+    <input type="file" id="file-input" accept="audio/*,.mp3,.m4a,.aac,.ogg,.opus,.flac,.wav,.webm,.wma,.alac,*/*" multiple>
+    <script src="vortex.js"></script>
+    <script>
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+    </script>
+</body>
+</html>
