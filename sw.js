@@ -1,13 +1,13 @@
 // Vortex Service Worker — offline caching
-const CACHE_NAME = 'vortex-v13';
+const CACHE_NAME = 'vortex-v14';
 const ASSETS = [
-  '/',
-  '/index.html',
-  '/vortex.js',
-  '/pcm-injector-worklet.js',
-  '/manifest.json',
-  '/icon-192.png',
-  '/icon-512.png'
+  './',
+  './index.html',
+  './vortex.js',
+  './pcm-injector-worklet.js',
+  './manifest.json',
+  './icon-192.png',
+  './icon-512.png'
 ];
 
 // Install: pre-cache app shell
@@ -49,7 +49,7 @@ self.addEventListener('fetch', e => {
       });
     }).catch(() => {
       // Offline fallback for navigation
-      if (e.request.mode === 'navigate') return caches.match('/');
+      if (e.request.mode === 'navigate') return caches.match('./');
     })
   );
 });

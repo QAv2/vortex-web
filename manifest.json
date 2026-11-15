@@ -2,7 +2,7 @@
   "name": "Vortex — Music Visualizer",
   "short_name": "Vortex",
   "description": "Real-time music visualizer with 10 presets. Load your music, pick a visual, go full screen.",
-  "start_url": "/",
+  "start_url": "./",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#08080c",
